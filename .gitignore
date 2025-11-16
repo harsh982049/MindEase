@@ -1,0 +1,61 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+
+# ---------- Virtual Environments ----------
+.venv/
+venv/
+env/
+*/Python_env_311/
+
+# ---------- Environment Files & Secrets (critical) ----------
+# Root & nested .env files
+.env
+.env.*
+**/.env
+*.env
+
+# Next/React-style envs
+.env.local
+.env.development
+.env.production
+.env.test
+
+# Generic credential/secret files
+client_secret*.json
+*credentials*.json
+token.json
+backend/client_secret.json
+backend/token.json
+
+# --- Flask / Django / Logs ---
+*.log
+*.sqlite3
+*.db
+*.bak
+*.tmp
+
+# --- CSV Files (can adjust later if some are needed) ---
+*.csv
+
+# --- Node / Frontend ---
+node_modules/
+dist/
+build/
+
+# --- IDE ---
+.vscode/
+.idea/
+
+# --- OS Junk ---
+.DS_Store
+Thumbs.db
+
+# --- Git ---
+backend/export/face_emotion_pt.onnx
+backend/best_model.pth
+backend/client_secret.json
+backend/.env
+backend/token.json
