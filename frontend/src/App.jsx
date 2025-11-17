@@ -12,6 +12,7 @@ import ContactPage from './pages/ContactPage';
 import BreathingCoach from './pages/BreathingCoach';
 import FocusCompanion from './pages/FocusCompanion';
 import TaskPrioritizer from './pages/TaskPrioritizer';
+import Games from './pages/Games';
 
 function App() {
 	return (
@@ -28,6 +29,7 @@ function App() {
 				<Route path="/breathing-coach" element={<BreathingCoach/>}/>
 				<Route path="/focus" element={<FocusCompanion/>}/>
 				<Route path="/priority" element={<TaskPrioritizer/>}/>
+				<Route path="/games" element={<Games/>}/>
 			</Routes>
 		</Router>
 	)

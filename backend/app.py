@@ -33,7 +33,6 @@ from services.supabase_client import supabase  # Supabase server client
 from services.focus_planner_service import plan_subtasks
 from services.scheduler_service import schedule_subtasks
 from services.notifier_service import send_email
-from services.hooks_service import handle_magic_hook
 
 from flask_jwt_extended import JWTManager, jwt_required, get_jwt_identity
 from flask_cors import CORS
@@ -67,7 +66,6 @@ breath_init_service()
 # APScheduler for Focus Companion reminders
 # =========================================
 DEFAULT_TZ = os.getenv("DEFAULT_TIMEZONE", "Asia/Kolkata")
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:5000")
 
 scheduler = BackgroundScheduler(timezone=DEFAULT_TZ)
 scheduler.start()
@@ -136,30 +134,48 @@ def google_auth_callback():
 
     return "Gmail API authorization complete. token.json saved. You can close this tab.", 200
 
-def render_email_for_subtask(subtask: dict, base_url: str, to_email: str) -> tuple[str, str]:
+def render_email_for_subtask(subtask: dict, to_email: str) -> tuple[str, str]:
     """
-    Returns (subject, html) for a subtask email with Start / Done / Snooze / Blocked buttons.
-    Assumes you already signed/encoded a magic token elsewhere; if not, uses a basic querystring.
+    Returns (subject, html) for a simple reminder email for a subtask.
+    Times are shown in DEFAULT_TZ (e.g. Asia/Kolkata), not raw UTC.
+    No Start/Done/Snooze/Blocked buttons.
     """
-    title = subtask.get("title", "Your subtask")
-    sid = subtask.get("id")
-    # Token strategy: if you already generate a signed token, plug it here. For now, pass sid/action plainly.
-    def link(action: str) -> str:
-        return f"{base_url}/api/focus/hook?token={sid}&action={action}"
-    # You can add ?mins= to snooze link if you like.
-    subject = f"[MindEase] {title} — action required"
+    title = subtask.get("title", "Your planned focus block")
+    dod = subtask.get("dod_text", "")
+    start = subtask.get("planned_start_ts")
+    end = subtask.get("planned_end_ts")
+
+    # Convert planned times to local timezone for display
+    def _to_local(val):
+        if val is None:
+            return None
+        # handle both ISO strings and datetime objects
+        if isinstance(val, str):
+            dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
+        else:
+            dt = val
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        local_tz = pytz.timezone(DEFAULT_TZ)
+        return dt.astimezone(local_tz)
+
+    start_local = _to_local(start)
+    end_local = _to_local(end)
+
+    if start_local and end_local:
+        planned_str = f"{start_local.strftime('%Y-%m-%d %H:%M')} → {end_local.strftime('%Y-%m-%d %H:%M')} ({DEFAULT_TZ})"
+    else:
+        planned_str = "not scheduled"
+
+    subject = f"[MindEase] Focus block: {title}"
     html = f"""
     <div style="font-family:Arial, Helvetica, sans-serif;max-width:560px">
-      <h2 style="margin:0 0 8px">Subtask: {title}</h2>
-      <p style="margin:0 0 12px">{subtask.get('dod_text','')}</p>
-      <p style="margin:0 0 12px"><b>Planned:</b> {subtask.get('planned_start_ts')} → {subtask.get('planned_end_ts')}</p>
-      <p>
-        <a href="{link('start')}" style="background:#2563eb;color:#fff;padding:10px 14px;border-radius:8px;text-decoration:none;">Start</a>
-        <a href="{link('done')}" style="background:#16a34a;color:#fff;padding:10px 14px;border-radius:8px;text-decoration:none;margin-left:8px;">Done</a>
-        <a href="{link('snooze')}&mins=10" style="background:#f59e0b;color:#fff;padding:10px 14px;border-radius:8px;text-decoration:none;margin-left:8px;">Snooze 10m</a>
-        <a href="{link('blocked')}" style="background:#ef4444;color:#fff;padding:10px 14px;border-radius:8px;text-decoration:none;margin-left:8px;">Blocked</a>
+      <h2 style="margin:0 0 8px">{title}</h2>
+      <p style="margin:0 0 12px">{dod}</p>
+      <p style="margin:0 0 12px"><b>Planned:</b> {planned_str}</p>
+      <p style="font-size:12px;color:#666">
+        This is a gentle reminder from MindEase based on the focus plan you created.
       </p>
-      <p style="font-size:12px;color:#666">Why this email? You asked MindEase to keep you on track for your plan.</p>
     </div>
     """
     return subject, html
@@ -183,7 +199,7 @@ def _enqueue_email_job(subtask: dict, to_email: str):
     job_id = f"email_{subtask['id']}"
 
     def _send_now():
-        subject, html = render_email_for_subtask(subtask, PUBLIC_BASE_URL, to_email)
+        subject, html = render_email_for_subtask(subtask, to_email)
         # send via provider-selected path (gmail api / sendgrid / smtp)
         send_email(to_email, subject, html)
 
@@ -584,27 +600,6 @@ def focus_create_task():
             "planned_end_ts": st["planned_end_ts"].isoformat()
         } for st in scheduled]
     }), 200
-
-@app.get("/api/focus/hook")
-def focus_magic_hook():
-    token = request.args.get("token", "")
-    action = request.args.get("action", "")
-    ok, msg, effect = handle_magic_hook(token, action, dict(request.args))
-    # If you want immediate reschedule/enqueue for the parent task, wire it here.
-    # Basic behavior: if effect asks for reschedule, you can pull all 'scheduled'
-    # subtasks of that task and re-enqueue emails. If you already do this elsewhere,
-    # you can skip.
-    try:
-        if ok and effect.get("reschedule"):
-            # Option 1: minimal — re-enqueue only the just-created micro-steps if provided
-            created = effect.get("seed_subtasks") or []
-            for st in created:
-                _enqueue_email_job(st, to_email=request.args.get("email") or st.get("assignee_email") or "")
-    except Exception as e:
-        print("[hook] reschedule enqueue failed:", repr(e))
-    status = 200 if ok else 400
-    return msg, status
-
 
 
 # -------- Chat management --------

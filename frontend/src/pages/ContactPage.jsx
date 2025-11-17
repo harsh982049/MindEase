@@ -25,8 +25,8 @@ const ContactPage = () => {
     {
       name: "Harsh Shah",
       email: "harsh.shah22@spit.ac.in",
-      linkedin: "https://linkedin.com/in/alexjohnson",
-      github: "https://github.com/alexjohnson",
+      linkedin: "https://www.linkedin.com/in/harsh-shah-134598220",
+      github: "https://github.com/harsh982049",
     },
     {
       name: "Tej Shah",
@@ -188,7 +188,7 @@ const ContactPage = () => {
                     <CardFooter>
                     <div className="w-full text-center">
                         <a
-                        href="https://github.com/ai-emotional-wellbeing"
+                        href="https://github.com/harsh982049/MindEase"
                         target="_blank"
                         rel="noopener noreferrer"
                         className="inline-flex items-center text-primary hover:underline"

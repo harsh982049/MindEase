@@ -99,10 +99,10 @@ export default function FocusCompanion() {
         animate="visible"
       >
         <motion.header variants={itemVariants} className="mb-8 text-center">
-          <h1 className="text-3xl font-bold">Focus Companion — Planner · Scheduler · Notifier</h1>
+          <h1 className="text-3xl font-bold">Focus Companion - Planner · Scheduler · Notifier</h1>
           <p className="text-muted-foreground mt-2">
-            Turn a big goal into 3–5 atomic sub-tasks, schedule them within your work hours,
-            and receive email magic-links to <b>Start / Done / Snooze / Blocked</b> from anywhere.
+            Turn a big goal into 3–5 atomic sub-tasks to schedule them within your work hours,
+            and receive email reminders
           </p>
         </motion.header>
 
@@ -233,14 +233,15 @@ export default function FocusCompanion() {
                       </div>
                     </div>
                     <div className="mt-3 md:mt-0 text-xs text-muted-foreground">
-                      You’ll receive an email with one-tap links:
-                      <span className="ml-1 font-medium">Start</span> · <span className="font-medium">Done</span> · <span className="font-medium">Snooze</span> · <span className="font-medium">Blocked</span>
+                      You&apos;ll receive a simple reminder email with this step, its time window,
+                      and a short &quot;definition of done&quot; so you know exactly what to focus on.
                     </div>
                   </div>
                 ))}
 
                 <p className="text-xs text-muted-foreground pt-2">
-                  Tip: if you’re running locally, ensure your backend emails can reach you (SMTP/App Password). For public callbacks in demo, set <code>PUBLIC_BASE_URL</code> to an <b>ngrok</b> URL.
+                  Tip: make sure your email settings (Gmail API or SMTP) are configured on the backend.
+                  The emails are one-way reminders – you mark things done in your own task manager or planner.
                 </p>
               </CardContent>
             </Card>
@@ -255,15 +256,11 @@ export default function FocusCompanion() {
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground space-y-2">
               <p>
-                When you create a task, the backend uses <b>Gemini 2.5 Flash</b> to produce 3–5 atomic steps (with
-                a “definition of done”) and <b>schedules</b> them within your work hours. At each planned start
-                time, you’ll get an email with magic links to change status from anywhere.
+                When you create a task, the backend uses <b>Gemini 2.5 Flash</b> to produce 3–5 atomic steps
+                (each with a clear &quot;definition of done&quot;) and <b>schedules</b> them within your work hours.
+                At each planned start time, you&apos;ll get a reminder email with the step, time window,
+                and what &quot;done&quot; looks like.
               </p>
-              <ul className="list-disc ml-5">
-                <li><b>Blocked</b> splits the step into 2–3 micro-steps and <b>reschedules</b> instantly.</li>
-                <li><b>Snooze</b> shifts the step forward (downstream steps adjust to avoid overlap).</li>
-                <li><b>Done</b> marks completion—future steps may pull forward depending on policy.</li>
-              </ul>
             </CardContent>
           </Card>
         </motion.section>
