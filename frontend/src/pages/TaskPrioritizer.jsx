@@ -295,7 +295,7 @@ export default function TaskPrioritizer() {
           </h1>
           <p className="mt-2 text-muted-foreground max-w-2xl mx-auto">
             Add tasks once, then let the AI reorder them based on deadlines, importance,
-            your energy levels, and estimated stress — with human-readable reasons for each task.
+            your energy levels, and estimated stress - with reasons for each task.
           </p>
         </motion.header>
 
@@ -452,7 +452,7 @@ export default function TaskPrioritizer() {
 
                 <div className="md:col-span-2 flex items-center justify-between gap-2">
                   <div className="text-xs text-muted-foreground">
-                    When you create a task, the backend asks Gemini to estimate{" "}
+                    When you create a task, the backend  estimates{" "}
                     <b>importance</b>, <b>stress cost</b>, <b>energy requirement</b>, and{" "}
                     <b>time needed</b>.
                   </div>
@@ -653,8 +653,7 @@ export default function TaskPrioritizer() {
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground space-y-2">
               <p>
-                This feature is <b>independent</b> of the Focus Companion email scheduler. It has
-                its own <code>priority_tasks</code> and <code>priority_runs</code> tables in Supabase.
+                This feature is used in <b>support</b> with the Focus Companion email scheduler.
               </p>
               <ul className="list-disc ml-5 space-y-1">
                 <li>

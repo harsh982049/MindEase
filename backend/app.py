@@ -461,7 +461,6 @@ def sb_upsert_one(table: str, payload: dict, on_conflict: str | None = None):
     rows = (res.data or []) if res else []
     return rows[0] if rows else None
 
-
 def get_or_create_user_by_email(email: str):
     user = sb_select_one("users", email=email)
     if user:
@@ -595,10 +594,198 @@ def focus_create_task():
     return jsonify({
         "task_id": task["id"],
         "subtasks": [{
-            "id": st["id"], "idx": st["idx"], "title": st["title"],
+            "id": st["id"],
+            "idx": st["idx"],
+            "title": st["title"],
+            "dod_text": st.get("dod_text"),
+            "estimate_min": st.get("estimate_min"),
             "planned_start_ts": st["planned_start_ts"].isoformat(),
-            "planned_end_ts": st["planned_end_ts"].isoformat()
+            "planned_end_ts": st["planned_end_ts"].isoformat(),
         } for st in scheduled]
+    }), 200
+
+    
+@app.get("/api/focus/subtasks/upcoming")
+@jwt_required(optional=True)
+def focus_upcoming_subtasks():
+    """
+    Return upcoming scheduled focus subtasks for the given user_email
+    over the next N days (default 7).
+    """
+    user_email = (request.args.get("user_email") or "").strip()
+    if not user_email:
+        return jsonify({"error": "user_email query param is required"}), 400
+
+    days = request.args.get("days", default=7, type=int)
+
+    # 1) Find user (no auto-create here; empty if no user yet)
+    try:
+        user = sb_select_one("users", email=user_email)
+    except APIError as e:
+        return jsonify({"error": f"users select failed: {e.message}"}), 500
+
+    if not user:
+        return jsonify({"subtasks": []}), 200
+
+    # 2) All tasks for this user
+    try:
+        tasks_res = supabase.table("tasks").select("id").eq("user_id", user["id"]).execute()
+        task_rows = tasks_res.data or []
+    except APIError as e:
+        return jsonify({"error": f"tasks select failed: {e.message}"}), 500
+
+    task_ids = [row["id"] for row in task_rows]
+    if not task_ids:
+        return jsonify({"subtasks": []}), 200
+
+    # 3) Subtasks for these tasks in the next N days
+    now_utc = datetime.now(timezone.utc)
+    horizon = now_utc + timedelta(days=days)
+
+    try:
+        q = (
+            supabase.table("subtasks")
+                .select(
+                    "id, task_id, idx, title, dod_text, estimate_min, planned_start_ts, planned_end_ts"
+                )
+                .in_("task_id", task_ids)
+                .gte("planned_start_ts", now_utc.isoformat())
+                .lte("planned_start_ts", horizon.isoformat())
+                .order("planned_start_ts", desc=False)  # ascending = True
+        )
+        res = q.execute()
+        rows = res.data or []
+    except APIError as e:
+        return jsonify({"error": f"subtasks select failed: {e.message}"}), 500
+
+    return jsonify({
+        "subtasks": [
+            {
+                "id": r["id"],
+                "task_id": r.get("task_id"),
+                "idx": r.get("idx"),
+                "title": r.get("title"),
+                "dod_text": r.get("dod_text"),
+                "estimate_min": r.get("estimate_min"),
+                "planned_start_ts": r.get("planned_start_ts"),
+                "planned_end_ts": r.get("planned_end_ts"),
+            }
+            for r in rows
+        ]
+    }), 200
+
+    
+@app.get("/api/focus/prefs")
+@jwt_required(optional=True)
+def focus_get_prefs():
+    """
+    Fetch stored focus/workday preferences for a given email.
+    Creates a user + default prefs lazily if they don't exist.
+    """
+    user_email = (request.args.get("user_email") or "").strip()
+    if not user_email:
+        return jsonify({"error": "user_email query param is required"}), 400
+
+    try:
+        user = get_or_create_user_by_email(user_email)
+        if not user:
+            return jsonify({"error": "Failed to create/find user"}), 500
+    except APIError as e:
+        return jsonify({"error": f"users upsert/select failed: {e.message}"}), 500
+
+    prefs = sb_select_one("user_prefs", user_id=user["id"])
+    if not prefs:
+        # lazily create demo-friendly defaults
+        try:
+            prefs = ensure_prefs_for_user(user["id"], {
+                "work_start_hhmm": "06:00",
+                "work_end_hhmm": "23:59",
+                "default_buffer_min": 1,
+                "notify_email": True,
+            })
+        except APIError as e:
+            return jsonify({"error": f"user_prefs upsert/select failed: {e.message}"}), 500
+
+    return jsonify({
+        "prefs": {
+            "timezone": prefs.get("timezone"),
+            "work_start_hhmm": prefs.get("work_start_hhmm"),
+            "work_end_hhmm": prefs.get("work_end_hhmm"),
+            "default_buffer_min": prefs.get("default_buffer_min"),
+            "notify_email": prefs.get("notify_email"),
+        }
+    }), 200
+
+
+@app.post("/api/focus/prefs")
+@jwt_required(optional=True)
+def focus_set_prefs():
+    """
+    Upsert focus/workday preferences for a given email.
+    Body JSON:
+    {
+      "user_email": "...",
+      "work_start_hhmm": "09:00",
+      "work_end_hhmm": "18:00",
+      "default_buffer_min": 5,
+      "notify_email": true
+    }
+    """
+    data = request.get_json(force=True)
+
+    user_email = (data.get("user_email") or "").strip()
+    if not user_email:
+        return jsonify({"error": "user_email is required"}), 400
+
+    try:
+        user = get_or_create_user_by_email(user_email)
+        if not user:
+            return jsonify({"error": "Failed to create/find user"}), 500
+    except APIError as e:
+        return jsonify({"error": f"users upsert/select failed: {e.message}"}), 500
+
+    existing = sb_select_one("user_prefs", user_id=user["id"])
+
+    tz = data.get("timezone") or (existing.get("timezone") if existing else os.getenv("DEFAULT_TIMEZONE", "Asia/Kolkata"))
+    ws = data.get("work_start_hhmm") or (existing.get("work_start_hhmm") if existing else "06:00")
+    we = data.get("work_end_hhmm") or (existing.get("work_end_hhmm") if existing else "23:59")
+
+    buf = data.get("default_buffer_min")
+    if buf is None:
+        buf = existing.get("default_buffer_min") if existing else 1
+    try:
+        buf = int(buf)
+    except (TypeError, ValueError):
+        buf = 1
+
+    notify_email = data.get("notify_email")
+    if notify_email is None:
+        notify_email = existing.get("notify_email") if existing else True
+
+    payload = {
+        "user_id": user["id"],
+        "timezone": tz,
+        "work_start_hhmm": ws,
+        "work_end_hhmm": we,
+        "default_buffer_min": buf,
+        "notify_email": bool(notify_email),
+        "notify_telegram": existing.get("notify_telegram") if existing else False,
+        "telegram_chat_id": existing.get("telegram_chat_id") if existing else None,
+    }
+
+    try:
+        prefs = sb_upsert_one("user_prefs", payload, on_conflict="user_id")
+    except APIError as e:
+        return jsonify({"error": f"user_prefs upsert failed: {e.message}"}), 500
+
+    return jsonify({
+        "prefs": {
+            "timezone": prefs.get("timezone"),
+            "work_start_hhmm": prefs.get("work_start_hhmm"),
+            "work_end_hhmm": prefs.get("work_end_hhmm"),
+            "default_buffer_min": prefs.get("default_buffer_min"),
+            "notify_email": prefs.get("notify_email"),
+        }
     }), 200
 
 
