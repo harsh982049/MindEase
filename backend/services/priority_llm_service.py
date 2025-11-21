@@ -101,6 +101,101 @@ Respond ONLY with valid JSON, no explanation.
         "category": category,
     }
 
+def generate_task_steps_with_llm(task: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Given a task (title, description, optional category), generate
+    a small, actionable step-by-step plan.
+
+    Returns a list like:
+    [
+      {
+        "step_number": 1,
+        "instruction": "...",
+        "estimated_minutes": 10,
+        "notes": "...",
+        "links": ["https://..."]
+      },
+      ...
+    ]
+    """
+    title = task.get("title", "") or ""
+    description = task.get("description") or ""
+    category = (task.get("ai_category") or task.get("category") or "other").lower()
+
+    prompt = f"""
+You are an assistant helping a student/working professional execute tasks.
+
+TASK:
+- Title: {title!r}
+- Description: {description!r}
+- Category (rough): {category!r}
+
+Break this task into 3 to 8 CONCRETE, ACTIONABLE steps.
+Each step should be something the user can actually do in 5–45 minutes.
+
+Return ONLY a JSON array. Each element MUST be an object with:
+
+- "step_number": integer >= 1, in execution order
+- "instruction": short, imperative sentence describing the action (e.g. "Open IRCTC website and log in")
+- "estimated_minutes": integer estimate for this step (5, 10, 15, 20, 30, 45, etc.)
+- "notes": optional short extra hint or context (string, can be empty)
+- "links": optional array of helpful URLs (can be empty)
+
+Example JSON format (structure only):
+
+[
+  {{
+    "step_number": 1,
+    "instruction": "Do something important",
+    "estimated_minutes": 15,
+    "notes": "",
+    "links": []
+  }}
+]
+
+Respond ONLY with valid JSON. No explanation, no markdown.
+    """.strip()
+
+    raw = _call_gemini_json(prompt)
+
+    if not isinstance(raw, list):
+        raise ValueError("Expected a JSON array for steps, got: %r" % type(raw))
+
+    steps: List[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            num = int(item.get("step_number", len(steps) + 1))
+        except Exception:
+            num = len(steps) + 1
+        instr = str(item.get("instruction") or "").strip()
+        if not instr:
+            continue
+        try:
+            est = int(item.get("estimated_minutes", 10))
+        except Exception:
+            est = 10
+        est = max(5, min(est, 180))  # clamp 5–180 minutes
+
+        notes = (item.get("notes") or "").strip()
+        links = item.get("links") or []
+        if not isinstance(links, list):
+            links = []
+
+        steps.append(
+            {
+                "step_number": num,
+                "instruction": instr,
+                "estimated_minutes": est,
+                "notes": notes,
+                "links": links,
+            }
+        )
+
+    # Sort by step_number to be safe
+    steps.sort(key=lambda s: s["step_number"])
+    return steps
 
 # ---------- Stage 2: Global prioritization ----------
 

@@ -67,6 +67,22 @@ export default function Navbar() {
           >
             Contact
           </motion.a>
+          <motion.a
+            href="/games"
+            className="text-sm font-medium hover:text-primary transition-colors"
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+          >
+            Games
+          </motion.a>
+          <motion.a
+            href="/focus"
+            className="text-sm font-medium hover:text-primary transition-colors"
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+          >
+            Focus Companion
+          </motion.a>
         </nav>
 
         {/* Right-side Auth Actions (Desktop) */}

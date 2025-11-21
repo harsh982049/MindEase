@@ -26,7 +26,9 @@ from services.priority_task_service import (
     prioritize_for_user,
     get_today_tasks_for_user,
     update_manual_order_for_user,
+    generate_steps_for_task,
 )
+
 
 # NEW: Focus Companion (planner + scheduler + notifier) services
 from services.supabase_client import supabase  # Supabase server client
@@ -229,6 +231,7 @@ def _enqueue_email_job(subtask: dict, to_email: str):
 # Task Prioritization Agent (independent feature)
 # =========================================
 
+
 @app.post("/api/priority/task/create")
 @jwt_required(optional=True)
 def priority_create_task():
@@ -269,6 +272,38 @@ def priority_create_task():
         return jsonify({"error": str(e)}), 500
 
     return jsonify({"task": task}), 200
+
+@app.post("/api/priority/task/steps")
+@jwt_required(optional=True)
+def priority_generate_task_steps():
+    """
+    Generate AI step-by-step instructions for a single task.
+
+    Body JSON:
+    {
+      "user_email": "user@example.com",   # optional but recommended
+      "task_id": "<priority_tasks.id>"
+    }
+
+    Response:
+    {
+      "task": { ...updated task row... },
+      "steps": [ { step_number, instruction, estimated_minutes, notes, links }, ... ]
+    }
+    """
+    data = request.get_json(force=True) or {}
+    task_id = (data.get("task_id") or "").strip()
+    user_email = (data.get("user_email") or "").strip() or None
+
+    if not task_id:
+        return jsonify({"error": "task_id is required"}), 400
+
+    try:
+        out = generate_steps_for_task(task_id, user_email=user_email)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    return jsonify(out), 200
 
 
 @app.post("/api/priority/run")

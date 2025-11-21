@@ -8,7 +8,12 @@ from uuid import uuid4
 from postgrest.exceptions import APIError
 
 from .supabase_client import supabase
-from .priority_llm_service import analyze_task_with_llm, prioritize_tasks_with_llm
+from .priority_llm_service import (
+    analyze_task_with_llm,
+    prioritize_tasks_with_llm,
+    generate_task_steps_with_llm,
+)
+
 
 DEFAULT_TZ = os.getenv("DEFAULT_TIMEZONE", "Asia/Kolkata")
 
@@ -377,3 +382,70 @@ def update_manual_order_for_user(user_email: str, ordered_ids: List[str]) -> Dic
     # Return refreshed list
     tasks = _fetch_tasks_with_ai_fields(user["id"])
     return {"tasks": tasks}
+
+def generate_steps_for_task(task_id: str, user_email: str | None = None) -> Dict[str, Any]:
+    """
+    Fetch a task from priority_tasks, call LLM to generate step-by-step
+    instructions, store them in steps_json, and return the updated task.
+
+    If user_email is provided, we resolve it to user_id and enforce that the
+    task belongs to that user.
+    """
+    if not task_id:
+        raise ValueError("task_id is required")
+
+    # Base query: find task by its id
+    q = supabase.table("priority_tasks").select("*").eq("id", task_id)
+
+    # If we got an email, resolve to user_id and enforce that the task belongs
+    # to that user (consistent with the rest of this service).
+    if user_email:
+        user = get_or_create_user_by_email(user_email.strip())
+        if not user:
+            raise RuntimeError("User not found for given email")
+        q = q.eq("user_id", user["id"])   # ✅ use user_id, not user_email
+
+    res = q.limit(1).execute()
+    rows = res.data or []
+    if not rows:
+        raise ValueError("Task not found for this user.")
+
+    task = rows[0]
+
+    # Build a minimal context for the LLM based on existing fields
+    llm_task = {
+        "title": task.get("title", ""),
+        "description": task.get("description") or "",
+        "category": task.get("ai_category") or task.get("category") or "other",
+    }
+
+    # Call LLM to get steps
+    steps = generate_task_steps_with_llm(llm_task)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    update_payload = {
+        "steps_json": steps,
+        "steps_generated_at": now_iso,
+        "updated_at": now_iso,
+    }
+
+    try:
+        upd = (
+            supabase.table("priority_tasks")
+            .update(update_payload)
+            .eq("id", task["id"])
+            .execute()
+        )
+        updated_rows = upd.data or []
+        if updated_rows:
+            task = updated_rows[0]
+    except APIError as e:
+        print("[priority_task_service] generate_steps_for_task update failed:", e.message)
+        # Even if update fails, still return the generated steps
+        task["steps_json"] = steps
+        task["steps_generated_at"] = now_iso
+
+    return {
+        "task": task,
+        "steps": task.get("steps_json") or steps,
+    }

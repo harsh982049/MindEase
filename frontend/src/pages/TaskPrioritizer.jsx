@@ -83,8 +83,8 @@ export default function TaskPrioritizer() {
   // --- create-task form ---
   const [title, setTitle] = useState("")
   const [description, setDescription] = useState("")
-  const [deadlineDate, setDeadlineDate] = useState("")   // "2025-11-17"
-  const [deadlineTime, setDeadlineTime] = useState("")   // "14:30"
+  const [deadlineDate, setDeadlineDate] = useState("") // "2025-11-17"
+  const [deadlineTime, setDeadlineTime] = useState("") // "14:30"
 
   const [status, setStatus] = useState("backlog")
 
@@ -99,6 +99,10 @@ export default function TaskPrioritizer() {
   const [savingOrder, setSavingOrder] = useState(false)
   const [error, setError] = useState("")
   const [info, setInfo] = useState("")
+
+  // Task Coach (AI step-by-step guide) state
+  const [stepsLoadingId, setStepsLoadingId] = useState(null)
+  const [expandedTaskId, setExpandedTaskId] = useState(null)
 
   // Group tasks by bucket for UI
   const groupedTasks = useMemo(() => {
@@ -143,6 +147,52 @@ export default function TaskPrioritizer() {
       )
     } finally {
       setLoadingFetch(false)
+    }
+  }
+
+  // Merge updated task (e.g. with steps_json) into local state
+  function mergeUpdatedTask(updatedTask) {
+    setTasks((prev) =>
+      (prev || []).map((t) => (t.id === updatedTask.id ? { ...t, ...updatedTask } : t)),
+    )
+  }
+
+  // AI Task Coach: generate or toggle step-by-step instructions for a task
+  async function handleGuideMeClick(task) {
+    const tid = task.id
+    if (!tid) return
+
+    setError("")
+    setInfo("")
+
+    // If steps already exist, just toggle expand/collapse
+    if (task.steps_json && task.steps_json.length > 0) {
+      setExpandedTaskId((prev) => (prev === tid ? null : tid))
+      return
+    }
+
+    setStepsLoadingId(tid)
+    try {
+      const { data } = await axios.post(`${API_BASE}/api/priority/task/steps`, {
+        user_email: userEmail.trim() || undefined,
+        task_id: tid,
+      })
+
+      const updatedTask = data.task || {}
+      if (!updatedTask.steps_json && data.steps) {
+        updatedTask.steps_json = data.steps
+      }
+
+      mergeUpdatedTask(updatedTask)
+      setExpandedTaskId(tid)
+    } catch (err) {
+      console.error("failed to generate steps", err)
+      setError(
+        err?.response?.data?.error ||
+          "Could not generate AI steps for this task. Please check backend logs.",
+      )
+    } finally {
+      setStepsLoadingId(null)
     }
   }
 
@@ -215,7 +265,7 @@ export default function TaskPrioritizer() {
     } catch (err) {
       setError(
         err?.response?.data?.error ||
-          "Could not run AI prioritization. Check backend / API key configuration."
+          "Could not run AI prioritization. Please check the backend logs."
       )
     } finally {
       setLoadingRun(false)
@@ -243,6 +293,11 @@ export default function TaskPrioritizer() {
     copyTasks[indexA] = copyTasks[indexB]
     copyTasks[indexB] = temp
 
+    // Also swap their ai_priority_rank locally
+    const rankA = copyTasks[indexA].ai_priority_rank
+    copyTasks[indexA].ai_priority_rank = copyTasks[indexB].ai_priority_rank
+    copyTasks[indexB].ai_priority_rank = rankA
+
     setTasks(copyTasks)
   }
 
@@ -251,19 +306,21 @@ export default function TaskPrioritizer() {
       setError("Please enter your email first.")
       return
     }
+
     const list = groupedTasks[bucket] || []
-    if (!list.length) return
-    const orderedIds = list.map((t) => t.id)
+    if (list.length <= 1) return
+
     setSavingOrder(true)
     setError("")
     setInfo("")
     try {
-      const { data } = await axios.post(`${API_BASE}/api/priority/order/manual`, {
+      const payload = {
         user_email: userEmail.trim(),
-        ordered_ids: orderedIds,
-      })
-      setTasks(data.tasks || [])
-      setInfo("Order updated successfully for this bucket.")
+        bucket,
+        ordered_task_ids: list.map((t) => t.id),
+      }
+      await axios.post(`${API_BASE}/api/priority/order/manual`, payload)
+      setInfo("Order updated successfully for the Now bucket.")
     } catch (err) {
       setError(
         err?.response?.data?.error ||
@@ -295,89 +352,88 @@ export default function TaskPrioritizer() {
           </h1>
           <p className="mt-2 text-muted-foreground max-w-2xl mx-auto">
             Add tasks once, then let the AI reorder them based on deadlines, importance,
-            your energy levels, and estimated stress - with reasons for each task.
+            stress, and your available focus time.
           </p>
         </motion.header>
 
-        {/* Email + Day context */}
+        {/* Email + Focus Time + Refresh */}
         <motion.section variants={itemVariants} className="mb-6">
           <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <ListChecks className="h-5 w-5" />
-                Your Context for Today
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="grid gap-4 md:grid-cols-3">
-              <div className="md:col-span-1">
-                <label className="text-sm font-medium">Your Email</label>
-                <Input
-                  type="email"
-                  placeholder="you@example.com"
-                  value={userEmail}
-                  onChange={(e) => setUserEmail(e.target.value)}
-                  required
-                />
-                <p className="text-xs text-muted-foreground mt-1">
-                  Used to link tasks and prioritization to your account.
-                </p>
-              </div>
+            <CardContent className="py-4">
+              <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                <div className="flex-1 grid gap-3 md:grid-cols-[2fr_1fr] md:items-center">
+                  <div>
+                    <label className="text-sm font-medium">Your Email (for this profile)</label>
+                    <Input
+                      type="email"
+                      placeholder="you@example.com"
+                      value={userEmail}
+                      onChange={(e) => setUserEmail(e.target.value)}
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      All tasks and prioritization runs are linked to this email.
+                    </p>
+                  </div>
 
-              <div className="md:col-span-1">
-                <label className="text-sm font-medium flex items-center gap-1">
-                  <Clock className="h-4 w-4" />
-                  Available Focus Time (minutes)
-                </label>
-                <Input
-                  type="number"
-                  min={15}
-                  step={15}
-                  value={todayMinutes}
-                  onChange={(e) => setTodayMinutes(e.target.value)}
-                />
-                <p className="text-xs text-muted-foreground mt-1">
-                  Rough estimate; AI keeps your day realistic around this limit.
-                </p>
-              </div>
+                  <div>
+                    <label className="text-sm font-medium flex items-center gap-1">
+                      <Clock className="h-4 w-4" />
+                      Available Focus Time Today (minutes)
+                    </label>
+                    <Input
+                      type="number"
+                      min={15}
+                      step={15}
+                      value={todayMinutes}
+                      onChange={(e) => setTodayMinutes(e.target.value)}
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Rough estimate of how much deep work time you really have today.
+                    </p>
+                  </div>
+                </div>
 
-              <div className="md:col-span-1 flex items-end gap-2">
-                <Button
-                  type="button"
-                  className="w-full md:w-auto"
-                  onClick={handleRunAI}
-                  disabled={loadingRun || !hasEmail}
-                >
-                  {loadingRun ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Prioritizing…
-                    </>
-                  ) : (
-                    <>
-                      <Brain className="mr-2 h-4 w-4" />
-                      Let AI Prioritize My Day
-                    </>
-                  )}
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="w-full md:w-auto"
-                  onClick={fetchTasks}
-                  disabled={loadingFetch || !hasEmail}
-                >
-                  {loadingFetch ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Refreshing
-                    </>
-                  ) : (
-                    <>
-                      <RefreshCcw className="mr-2 h-4 w-4" />
-                      Refresh Tasks
-                    </>
-                  )}
-                </Button>
+                <div className="flex flex-col gap-2 md:items-end">
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      disabled={!hasEmail || loadingFetch}
+                      onClick={fetchTasks}
+                    >
+                      {loadingFetch ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Loading…
+                        </>
+                      ) : (
+                        <>
+                          <RefreshCcw className="mr-2 h-4 w-4" />
+                          Refresh Tasks
+                        </>
+                      )}
+                    </Button>
+                    <Button
+                      disabled={!hasEmail || loadingRun}
+                      onClick={handleRunAI}
+                    >
+                      {loadingRun ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Prioritizing…
+                        </>
+                      ) : (
+                        <>
+                          <Brain className="mr-2 h-4 w-4" />
+                          Let AI prioritize my day
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                  <div className="text-xs text-muted-foreground text-right">
+                    Total planned time in buckets:{" "}
+                    <span className="font-medium">{totalPlannedMinutes} minutes</span>
+                  </div>
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -402,9 +458,9 @@ export default function TaskPrioritizer() {
                 </div>
 
                 <div className="md:col-span-2">
-                  <label className="text-sm font-medium">Description (optional)</label>
+                  <label className="text-sm font-medium">Description / Context (optional)</label>
                   <Textarea
-                    placeholder="Add any context that helps the AI judge importance, stress, or complexity…"
+                    placeholder="Add enough information so the AI knows what this task involves."
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
                     rows={3}
@@ -446,13 +502,13 @@ export default function TaskPrioritizer() {
                     <option value="planned">Planned</option>
                   </select>
                   <p className="text-xs text-muted-foreground mt-1">
-                    “Backlog” = someday; “Planned” = likely in the near future.
+                    This is just a hint; the AI can still move tasks between buckets.
                   </p>
                 </div>
 
                 <div className="md:col-span-2 flex items-center justify-between gap-2">
                   <div className="text-xs text-muted-foreground">
-                    When you create a task, the backend  estimates{" "}
+                    When you create a task, the backend asks Gemini to estimate{" "}
                     <b>importance</b>, <b>stress cost</b>, <b>energy requirement</b>, and{" "}
                     <b>time needed</b>.
                   </div>
@@ -477,6 +533,13 @@ export default function TaskPrioritizer() {
                 {info && (
                   <div className="md:col-span-2 text-sm text-emerald-600">{info}</div>
                 )}
+
+                {createdTask && (
+                  <div className="md:col-span-2 text-xs text-muted-foreground">
+                    Last created task:{" "}
+                    <span className="font-medium">{createdTask.title}</span>
+                  </div>
+                )}
               </form>
             </CardContent>
           </Card>
@@ -492,18 +555,10 @@ export default function TaskPrioritizer() {
                   Today’s AI Plan
                 </CardTitle>
               </CardHeader>
-              <CardContent className="text-sm text-muted-foreground flex flex-col gap-2">
-                <p>{planSummary}</p>
-                <div className="flex flex-wrap items-center gap-3 text-xs">
-                  <span className="inline-flex items-center gap-1">
-                    <Clock className="h-3.5 w-3.5" />
-                    Total estimated:&nbsp;<b>{totalPlannedMinutes}</b>&nbsp;min
-                  </span>
-                  <span className="inline-flex items-center gap-1">
-                    <Zap className="h-3.5 w-3.5" />
-                    Tasks considered:&nbsp;<b>{tasks?.length || 0}</b>
-                  </span>
-                </div>
+              <CardContent>
+                <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                  {planSummary}
+                </p>
               </CardContent>
             </Card>
           </motion.section>
@@ -609,34 +664,94 @@ export default function TaskPrioritizer() {
                             {t.ai_reason}
                           </p>
                         )}
+
+                        {/* AI-generated step-by-step guide */}
+                        {expandedTaskId === t.id && t.steps_json && t.steps_json.length > 0 && (
+                          <div className="mt-2 rounded-md border bg-muted/40 px-2.5 py-2">
+                            <div className="mb-1 flex items-center justify-between">
+                              <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                AI step-by-step guide
+                              </span>
+                              <span className="text-[10px] text-muted-foreground">
+                                {t.steps_json.length} step{t.steps_json.length > 1 ? "s" : ""}
+                              </span>
+                            </div>
+                            <ol className="space-y-1.5 text-[11px]">
+                              {t.steps_json.map((s, idxStep) => (
+                                <li key={idxStep} className="flex gap-2">
+                                  <span className="mt-[1px] h-4 w-4 flex-shrink-0 rounded-full border bg-background text-[9px] flex items-center justify-center">
+                                    {s.step_number ?? idxStep + 1}
+                                  </span>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex flex-wrap items-center gap-1">
+                                      <span className="font-medium">{s.instruction}</span>
+                                      {s.estimated_minutes && (
+                                        <span className="text-[10px] text-muted-foreground">
+                                          (~{s.estimated_minutes} min)
+                                        </span>
+                                      )}
+                                    </div>
+                                    {s.notes && (
+                                      <p className="text-[10px] text-muted-foreground">
+                                        {s.notes}
+                                      </p>
+                                    )}
+                                  </div>
+                                </li>
+                              ))}
+                            </ol>
+                          </div>
+                        )}
                       </div>
 
-                      {/* Simple manual ordering for "Now" bucket */}
-                      {bucketKey === "now" && list.length > 1 && (
-                        <div className="flex md:flex-col items-center gap-2 md:gap-1 text-xs text-muted-foreground">
-                          <span className="md:mb-1">Adjust order</span>
-                          <Button
-                            variant="outline"
-                            size="icon"
-                            className="h-6 w-6"
-                            onClick={() => moveTask(bucketKey, idx, -1)}
-                            disabled={idx === 0}
-                            type="button"
-                          >
-                            <ArrowUp className="h-3 w-3" />
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="icon"
-                            className="h-6 w-6"
-                            onClick={() => moveTask(bucketKey, idx, +1)}
-                            disabled={idx === list.length - 1}
-                            type="button"
-                          >
-                            <ArrowDown className="h-3 w-3" />
-                          </Button>
-                        </div>
-                      )}
+                      {/* Manual ordering + Task Coach controls */}
+                      <div className="flex flex-col items-end gap-2 text-xs text-muted-foreground">
+                        {bucketKey === "now" && list.length > 1 && (
+                          <div className="flex md:flex-col items-center gap-2 md:gap-1">
+                            <span className="md:mb-1">Adjust order</span>
+                            <Button
+                              variant="outline"
+                              size="icon"
+                              className="h-6 w-6"
+                              onClick={() => moveTask(bucketKey, idx, -1)}
+                              disabled={idx === 0}
+                              type="button"
+                            >
+                              <ArrowUp className="h-3 w-3" />
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="icon"
+                              className="h-6 w-6"
+                              onClick={() => moveTask(bucketKey, idx, +1)}
+                              disabled={idx === list.length - 1}
+                              type="button"
+                            >
+                              <ArrowDown className="h-3 w-3" />
+                            </Button>
+                          </div>
+                        )}
+                        <Button
+                          variant="outline"
+                          size="xs"
+                          className="h-6 px-2 text-[10px]"
+                          onClick={() => handleGuideMeClick(t)}
+                          disabled={stepsLoadingId === t.id}
+                          type="button"
+                        >
+                          {stepsLoadingId === t.id ? (
+                            <>
+                              <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                              Thinking...
+                            </>
+                          ) : (
+                            <>
+                              <ListChecks className="mr-1 h-3 w-3" />
+                              Guide me
+                            </>
+                          )}
+                        </Button>
+                      </div>
                     </div>
                   ))}
                 </CardContent>
@@ -653,7 +768,8 @@ export default function TaskPrioritizer() {
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground space-y-2">
               <p>
-                This feature is used in <b>support</b> with the Focus Companion email scheduler.
+                This feature is <b>independent</b> of the Focus Companion email scheduler. It has
+                its own <code>priority_tasks</code> and <code>priority_runs</code> tables in Supabase.
               </p>
               <ul className="list-disc ml-5 space-y-1">
                 <li>
@@ -668,6 +784,10 @@ export default function TaskPrioritizer() {
                 <li>
                   You can still <b>override</b> the order for the “Now” bucket; the backend updates
                   ranks accordingly.
+                </li>
+                <li>
+                  For any task, clicking <b>“Guide me”</b> asks the AI to generate a small,
+                  actionable, step-by-step breakdown of how to execute that task.
                 </li>
               </ul>
             </CardContent>
