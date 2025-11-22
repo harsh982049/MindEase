@@ -23,7 +23,7 @@ import {
   ArrowDown,
 } from "lucide-react"
 
-const API_BASE = "http://127.0.0.1:5000" // keep consistent with other pages
+const API_BASE = "http://127.0.0.1:5000"
 
 const containerVariants = {
   hidden: { opacity: 0 },
@@ -44,6 +44,20 @@ function toLocal(dt) {
     return `${date} • ${time}`
   } catch {
     return dt
+  }
+}
+
+function formatDateOnly(dateStr) {
+  if (!dateStr) return ""
+  try {
+    const d = new Date(dateStr + "T00:00:00")
+    return d.toLocaleDateString([], {
+      year: "numeric",
+      month: "short",
+      day: "2-digit",
+    })
+  } catch {
+    return dateStr
   }
 }
 
@@ -75,17 +89,41 @@ function bucketBadgeVariant(bucket) {
   }
 }
 
+function getDisplayMinutes(task) {
+  if (typeof task?.planned_for_minutes === "number" && task.planned_for_minutes > 0) {
+    return task.planned_for_minutes
+  }
+  if (typeof task?.ai_estimated_minutes === "number" && task.ai_estimated_minutes > 0) {
+    return task.ai_estimated_minutes
+  }
+  return 0
+}
+
 export default function TaskPrioritizer() {
   // --- shared state ---
   const [userEmail, setUserEmail] = useState("")
   const [todayMinutes, setTodayMinutes] = useState(120)
+  const [planningHorizonDays, setPlanningHorizonDays] = useState(1) // user-chosen days
+  const [feedbackType, setFeedbackType] = useState("")
+
+  // Relaxation preferences (for personalized breaks)
+  const [relaxPrefs, setRelaxPrefs] = useState({
+    likes_games: false,
+    likes_music: false,
+    likes_breathing: false,
+    likes_walking: false,
+    likes_chatting: false,
+    custom_text: "",
+  })
+
+  // Has a plan been generated at least once this session?
+  const [hasPlan, setHasPlan] = useState(false)
 
   // --- create-task form ---
   const [title, setTitle] = useState("")
   const [description, setDescription] = useState("")
-  const [deadlineDate, setDeadlineDate] = useState("") // "2025-11-17"
-  const [deadlineTime, setDeadlineTime] = useState("") // "14:30"
-
+  const [deadlineDate, setDeadlineDate] = useState("")
+  const [deadlineTime, setDeadlineTime] = useState("")
   const [status, setStatus] = useState("backlog")
 
   // --- results / UI ---
@@ -100,11 +138,13 @@ export default function TaskPrioritizer() {
   const [error, setError] = useState("")
   const [info, setInfo] = useState("")
 
-  // Task Coach (AI step-by-step guide) state
+  // Task Coach (Guide me)
   const [stepsLoadingId, setStepsLoadingId] = useState(null)
   const [expandedTaskId, setExpandedTaskId] = useState(null)
 
-  // Group tasks by bucket for UI
+  const hasEmail = userEmail.trim().length > 0
+
+  // Group tasks by bucket
   const groupedTasks = useMemo(() => {
     const byBucket = { now: [], next: [], later: [], backlog: [] }
     for (const t of tasks || []) {
@@ -117,15 +157,14 @@ export default function TaskPrioritizer() {
 
   const totalPlannedMinutes = useMemo(() => {
     if (!tasks?.length) return 0
-    return tasks.reduce((acc, t) => acc + (t.ai_estimated_minutes || 0), 0)
+    return tasks.reduce((acc, t) => acc + getDisplayMinutes(t), 0)
   }, [tasks])
 
-  const hasEmail = userEmail.trim().length > 0
-
-  // --- initial load: when userEmail is set, fetch existing tasks ---
+  // Initial load when email is set: fetch tasks + relax prefs
   useEffect(() => {
     if (!hasEmail) return
     fetchTasks()
+    fetchRelaxPrefs()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasEmail])
 
@@ -139,7 +178,6 @@ export default function TaskPrioritizer() {
         params: { user_email: userEmail.trim() },
       })
       setTasks(data.tasks || [])
-      // we don't get plan_summary here; only from /api/priority/run
     } catch (err) {
       setError(
         err?.response?.data?.error ||
@@ -150,14 +188,57 @@ export default function TaskPrioritizer() {
     }
   }
 
-  // Merge updated task (e.g. with steps_json) into local state
+  async function fetchRelaxPrefs() {
+    if (!hasEmail) return
+    try {
+      const { data } = await axios.get(`${API_BASE}/api/priority/relax-prefs`, {
+        params: { user_email: userEmail.trim() },
+      })
+      if (data && data.prefs) {
+        setRelaxPrefs((prev) => ({
+          ...prev,
+          likes_games: !!data.prefs.likes_games,
+          likes_music: !!data.prefs.likes_music,
+          likes_breathing: !!data.prefs.likes_breathing,
+          likes_walking: !!data.prefs.likes_walking,
+          likes_chatting: !!data.prefs.likes_chatting,
+          custom_text: data.prefs.custom_text || "",
+        }))
+      }
+    } catch (err) {
+      console.warn("Could not fetch relax prefs", err)
+    }
+  }
+
+  async function handleSaveRelaxPrefs() {
+    if (!hasEmail) {
+      setError("Please enter your email before saving relaxation preferences.")
+      return
+    }
+    setError("")
+    setInfo("")
+    try {
+      const payload = {
+        user_email: userEmail.trim(),
+        ...relaxPrefs,
+      }
+      await axios.post(`${API_BASE}/api/priority/relax-prefs`, payload)
+      setInfo("Relaxation preferences saved.")
+    } catch (err) {
+      console.error("Failed to save relax prefs", err)
+      setError(
+        err?.response?.data?.error ||
+          "Could not save relaxation preferences. Please check backend logs."
+      )
+    }
+  }
+
   function mergeUpdatedTask(updatedTask) {
     setTasks((prev) =>
-      (prev || []).map((t) => (t.id === updatedTask.id ? { ...t, ...updatedTask } : t)),
+      (prev || []).map((t) => (t.id === updatedTask.id ? { ...t, ...updatedTask } : t))
     )
   }
 
-  // AI Task Coach: generate or toggle step-by-step instructions for a task
   async function handleGuideMeClick(task) {
     const tid = task.id
     if (!tid) return
@@ -165,7 +246,7 @@ export default function TaskPrioritizer() {
     setError("")
     setInfo("")
 
-    // If steps already exist, just toggle expand/collapse
+    // If steps already exist, just toggle open/close
     if (task.steps_json && task.steps_json.length > 0) {
       setExpandedTaskId((prev) => (prev === tid ? null : tid))
       return
@@ -189,7 +270,7 @@ export default function TaskPrioritizer() {
       console.error("failed to generate steps", err)
       setError(
         err?.response?.data?.error ||
-          "Could not generate AI steps for this task. Please check backend logs.",
+          "Could not generate AI steps for this task. Please check backend logs."
       )
     } finally {
       setStepsLoadingId(null)
@@ -212,10 +293,12 @@ export default function TaskPrioritizer() {
     try {
       let deadlineIso
       if (deadlineDate) {
-        // If user didn’t specify time, assume end of day
         const timePart = deadlineTime || "23:59"
         const local = `${deadlineDate}T${timePart}`
-        deadlineIso = new Date(local).toISOString()
+        const d = new Date(local)
+        if (!isNaN(d.getTime())) {
+          deadlineIso = d.toISOString()
+        }
       }
 
       const payload = {
@@ -233,7 +316,6 @@ export default function TaskPrioritizer() {
       setDeadlineTime("")
       setStatus("backlog")
       setInfo("Task created and analyzed with AI. You can now run prioritization.")
-      // refresh tasks list
       fetchTasks()
     } catch (err) {
       setError(
@@ -254,13 +336,17 @@ export default function TaskPrioritizer() {
     setError("")
     setInfo("")
     try {
+      const horizon = Number(planningHorizonDays)
       const payload = {
         user_email: userEmail.trim(),
         today_available_minutes: Number(todayMinutes) || undefined,
+        planning_horizon_days: horizon && horizon > 0 ? horizon : undefined,
+        feedback_type: hasPlan && feedbackType ? feedbackType : undefined,
       }
       const { data } = await axios.post(`${API_BASE}/api/priority/run`, payload)
       setPlanSummary(data.plan_summary || "")
       setTasks(data.tasks || [])
+      setHasPlan(true) // only after first successful run
       setInfo("AI prioritization updated successfully.")
     } catch (err) {
       setError(
@@ -272,7 +358,6 @@ export default function TaskPrioritizer() {
     }
   }
 
-  // simple manual reordering within a bucket (using up/down buttons)
   function moveTask(bucket, idx, direction) {
     const list = groupedTasks[bucket] || []
     if (!list.length) return
@@ -293,7 +378,6 @@ export default function TaskPrioritizer() {
     copyTasks[indexA] = copyTasks[indexB]
     copyTasks[indexB] = temp
 
-    // Also swap their ai_priority_rank locally
     const rankA = copyTasks[indexA].ai_priority_rank
     copyTasks[indexA].ai_priority_rank = copyTasks[indexB].ai_priority_rank
     copyTasks[indexB].ai_priority_rank = rankA
@@ -320,7 +404,7 @@ export default function TaskPrioritizer() {
         ordered_task_ids: list.map((t) => t.id),
       }
       await axios.post(`${API_BASE}/api/priority/order/manual`, payload)
-      setInfo("Order updated successfully for the Now bucket.")
+      setInfo(`Order updated successfully for the "${bucketLabel(bucket)}" bucket.`)
     } catch (err) {
       setError(
         err?.response?.data?.error ||
@@ -352,53 +436,226 @@ export default function TaskPrioritizer() {
           </h1>
           <p className="mt-2 text-muted-foreground max-w-2xl mx-auto">
             Add tasks once, then let the AI reorder them based on deadlines, importance,
-            stress, and your available focus time.
+            stress, and your available focus time. You can also spread work across
+            multiple days so everything doesn&apos;t pile into today.
           </p>
         </motion.header>
 
-        {/* Email + Focus Time + Refresh */}
+        {/* Controls card */}
         <motion.section variants={itemVariants} className="mb-6">
           <Card>
-            <CardContent className="py-4">
-              <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                <div className="flex-1 grid gap-3 md:grid-cols-[2fr_1fr] md:items-center">
-                  <div>
-                    <label className="text-sm font-medium">Your Email (for this profile)</label>
-                    <Input
-                      type="email"
-                      placeholder="you@example.com"
-                      value={userEmail}
-                      onChange={(e) => setUserEmail(e.target.value)}
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">
-                      All tasks and prioritization runs are linked to this email.
-                    </p>
-                  </div>
+            <CardContent className="py-4 space-y-4">
+              {/* Row 1: Email */}
+              <div className="grid gap-3 md:grid-cols-[2fr,1fr] md:items-center">
+                <div>
+                  <label className="text-sm font-medium">Your Email (for this profile)</label>
+                  <Input
+                    type="email"
+                    placeholder="you@example.com"
+                    value={userEmail}
+                    onChange={(e) => setUserEmail(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    All tasks and AI prioritization runs are linked to this email.
+                  </p>
+                </div>
+                <div className="hidden md:block text-xs text-muted-foreground text-right">
+                  Tip: Use the same email everywhere in MindEase so the system can build a
+                  consistent profile of your workload and preferences.
+                </div>
+              </div>
 
-                  <div>
-                    <label className="text-sm font-medium flex items-center gap-1">
-                      <Clock className="h-4 w-4" />
-                      Available Focus Time Today (minutes)
-                    </label>
-                    <Input
-                      type="number"
-                      min={15}
-                      step={15}
-                      value={todayMinutes}
-                      onChange={(e) => setTodayMinutes(e.target.value)}
-                    />
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Rough estimate of how much deep work time you really have today.
-                    </p>
-                  </div>
+              {/* Row 2: Focus time, horizon, feedback – horizontally aligned */}
+              <div className="grid gap-3 md:grid-cols-3 md:items-end">
+                <div>
+                  <label className="text-sm font-medium flex items-center gap-1">
+                    <Clock className="h-4 w-4" />
+                    Available Focus Time Today (minutes)
+                  </label>
+                  <Input
+                    type="number"
+                    min={15}
+                    step={15}
+                    value={todayMinutes}
+                    onChange={(e) => setTodayMinutes(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Rough estimate of how much deep work time you realistically have today.
+                  </p>
                 </div>
 
-                <div className="flex flex-col gap-2 md:items-end">
-                  <div className="flex gap-2">
+                <div>
+                  <label className="text-sm font-medium flex items-center gap-1">
+                    <Calendar className="h-4 w-4" />
+                    Planning Horizon (days)
+                  </label>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={30}
+                    step={1}
+                    value={planningHorizonDays}
+                    onChange={(e) => {
+                      const v = e.target.value
+                      if (!v) {
+                        setPlanningHorizonDays("")
+                        return
+                      }
+                      const n = Number(v)
+                      if (!isNaN(n) && n >= 1 && n <= 30) {
+                        setPlanningHorizonDays(n)
+                      }
+                    }}
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    How many days (starting today) the AI is allowed to distribute your tasks
+                    across.
+                  </p>
+                </div>
+
+                {/* Feedback column: only show the question after a plan exists */}
+                <div>
+                  {hasPlan ? (
+                    <>
+                      <label className="text-sm font-medium flex items-center gap-1">
+                        <AlertTriangle className="h-4 w-4" />
+                        How does the current plan feel?
+                      </label>
+                      <select
+                        className="mt-1 block w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                        value={feedbackType}
+                        onChange={(e) => setFeedbackType(e.target.value)}
+                      >
+                        <option value="">No specific feedback</option>
+                        <option value="too_packed">Too packed / overwhelming</option>
+                        <option value="needs_breaks">Needs more breaks</option>
+                        <option value="very_stressed">I&apos;m very stressed today</option>
+                      </select>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Change this and re-run the AI if you want it to lighten today&apos;s
+                        load or add more breaks.
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-xs text-muted-foreground mt-6">
+                      Once you run <b>&quot;Let AI prioritize my plan&quot;</b>, you&apos;ll be
+                      able to give feedback on how the plan feels here.
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Row 3: Relaxation preferences + buttons */}
+              <div className="grid gap-4 md:grid-cols-[2fr,auto] md:items-end">
+                <div>
+                  <label className="text-sm font-medium">
+                    What helps you relax during breaks?
+                  </label>
+                  <div className="mt-2 grid grid-cols-2 gap-2 text-sm">
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        className="h-3.5 w-3.5"
+                        checked={relaxPrefs.likes_games}
+                        onChange={(e) =>
+                          setRelaxPrefs((prev) => ({
+                            ...prev,
+                            likes_games: e.target.checked,
+                          }))
+                        }
+                      />
+                      <span>Play games</span>
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        className="h-3.5 w-3.5"
+                        checked={relaxPrefs.likes_music}
+                        onChange={(e) =>
+                          setRelaxPrefs((prev) => ({
+                            ...prev,
+                            likes_music: e.target.checked,
+                          }))
+                        }
+                      />
+                      <span>Listen to music</span>
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        className="h-3.5 w-3.5"
+                        checked={relaxPrefs.likes_breathing}
+                        onChange={(e) =>
+                          setRelaxPrefs((prev) => ({
+                            ...prev,
+                            likes_breathing: e.target.checked,
+                          }))
+                        }
+                      />
+                      <span>Breathing exercises</span>
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        className="h-3.5 w-3.5"
+                        checked={relaxPrefs.likes_walking}
+                        onChange={(e) =>
+                          setRelaxPrefs((prev) => ({
+                            ...prev,
+                            likes_walking: e.target.checked,
+                          }))
+                        }
+                      />
+                      <span>Walk / stretch</span>
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        className="h-3.5 w-3.5"
+                        checked={relaxPrefs.likes_chatting}
+                        onChange={(e) =>
+                          setRelaxPrefs((prev) => ({
+                            ...prev,
+                            likes_chatting: e.target.checked,
+                          }))
+                        }
+                      />
+                      <span>Talk to someone</span>
+                    </label>
+                  </div>
+                  <Textarea
+                    className="mt-2"
+                    rows={2}
+                    placeholder="e.g. I relax best with short puzzle games and lo-fi music."
+                    value={relaxPrefs.custom_text}
+                    onChange={(e) =>
+                      setRelaxPrefs((prev) => ({
+                        ...prev,
+                        custom_text: e.target.value,
+                      }))
+                    }
+                  />
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    These preferences are stored for your profile and used when the AI suggests
+                    short, personalized breaks inside the step-by-step guides.
+                  </p>
+                </div>
+
+                <div className="flex flex-col items-stretch gap-2 md:items-end">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handleSaveRelaxPrefs}
+                    disabled={!hasEmail}
+                  >
+                    Save preferences
+                  </Button>
+                  <div className="flex gap-2 md:justify-end">
                     <Button
                       variant="outline"
                       disabled={!hasEmail || loadingFetch}
                       onClick={fetchTasks}
+                      type="button"
                     >
                       {loadingFetch ? (
                         <>
@@ -415,6 +672,7 @@ export default function TaskPrioritizer() {
                     <Button
                       disabled={!hasEmail || loadingRun}
                       onClick={handleRunAI}
+                      type="button"
                     >
                       {loadingRun ? (
                         <>
@@ -424,16 +682,17 @@ export default function TaskPrioritizer() {
                       ) : (
                         <>
                           <Brain className="mr-2 h-4 w-4" />
-                          Let AI prioritize my day
+                          Let AI prioritize my plan
                         </>
                       )}
                     </Button>
                   </div>
-                  <div className="text-xs text-muted-foreground text-right">
-                    Total planned time in buckets:{" "}
-                    <span className="font-medium">{totalPlannedMinutes} minutes</span>
-                  </div>
                 </div>
+              </div>
+
+              <div className="text-xs text-muted-foreground text-right">
+                Total planned time in buckets:{" "}
+                <span className="font-medium">{totalPlannedMinutes} minutes</span>
               </div>
             </CardContent>
           </Card>
@@ -467,6 +726,7 @@ export default function TaskPrioritizer() {
                   />
                 </div>
 
+                {/* Deadline + Initial status horizontally aligned */}
                 <div className="md:col-span-1">
                   <label className="text-sm font-medium flex items-center gap-1">
                     <Calendar className="h-4 w-4" />
@@ -487,7 +747,7 @@ export default function TaskPrioritizer() {
                     />
                   </div>
                   <p className="text-xs text-muted-foreground mt-1">
-                    Date is enough; if you skip time, we’ll assume end of day.
+                    If you skip time, the system assumes end of day.
                   </p>
                 </div>
 
@@ -502,7 +762,7 @@ export default function TaskPrioritizer() {
                     <option value="planned">Planned</option>
                   </select>
                   <p className="text-xs text-muted-foreground mt-1">
-                    This is just a hint; the AI can still move tasks between buckets.
+                    Just a hint for the AI. It can still move tasks between buckets.
                   </p>
                 </div>
 
@@ -552,7 +812,7 @@ export default function TaskPrioritizer() {
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Target className="h-5 w-5" />
-                  Today’s AI Plan
+                  AI Plan Overview
                 </CardTitle>
               </CardHeader>
               <CardContent>
@@ -569,8 +829,7 @@ export default function TaskPrioritizer() {
           {["now", "next", "later", "backlog"].map((bucketKey) => {
             const list = groupedTasks[bucketKey] || []
             const label = bucketLabel(bucketKey)
-            const showManualOrder =
-              bucketKey === "now" && list.length > 1 // allow manual order in "Now"
+            const showManualOrder = bucketKey === "now" && list.length > 1
 
             return (
               <Card key={bucketKey}>
@@ -580,7 +839,7 @@ export default function TaskPrioritizer() {
                     {bucketKey === "now" && (
                       <span className="text-xs text-muted-foreground inline-flex items-center gap-1">
                         <AlertTriangle className="h-3.5 w-3.5" />
-                        Highest-impact for the day.
+                        Highest-impact work you should tackle first.
                       </span>
                     )}
                   </div>
@@ -611,149 +870,205 @@ export default function TaskPrioritizer() {
                       No tasks in this bucket yet.
                     </p>
                   )}
-                  {list.map((t, idx) => (
-                    <div
-                      key={t.id}
-                      className="flex flex-col md:flex-row md:items-start md:justify-between gap-3 rounded-lg border p-4"
-                    >
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs text-muted-foreground">
-                            #{t.ai_priority_rank ?? "–"}
-                          </span>
-                          <span className="font-medium">{t.title}</span>
-                        </div>
-                        {t.description && (
-                          <p className="text-xs text-muted-foreground line-clamp-2">
-                            {t.description}
-                          </p>
-                        )}
-                        <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground mt-1">
-                          {t.deadline_ts && (
+                  {list.map((t, idx) => {
+                    const displayMinutes = getDisplayMinutes(t)
+                    const hasPlannedDate = !!t.planned_for_date
+                    const isTodayPlanned =
+                      hasPlannedDate &&
+                      new Date(t.planned_for_date + "T00:00:00").toDateString() ===
+                        new Date().toDateString()
+
+                    return (
+                      <div
+                        key={t.id}
+                        className="flex flex-col md:flex-row md:items-start md:justify-between gap-3 rounded-lg border p-4"
+                      >
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-muted-foreground">
+                              #{t.ai_priority_rank ?? "–"}
+                            </span>
+                            <span className="font-medium">{t.title}</span>
+                          </div>
+                          {t.description && (
+                            <p className="text-xs text-muted-foreground line-clamp-2">
+                              {t.description}
+                            </p>
+                          )}
+                          <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground mt-1">
+                            {t.deadline_ts && (
+                              <span className="inline-flex items-center gap-1">
+                                <Calendar className="h-3 w-3" />
+                                {toLocal(t.deadline_ts)}
+                              </span>
+                            )}
                             <span className="inline-flex items-center gap-1">
-                              <Calendar className="h-3 w-3" />
-                              {toLocal(t.deadline_ts)}
+                              <Target className="h-3 w-3" />
+                              Importance:&nbsp;<b>{t.ai_importance ?? 3}</b>/5
                             </span>
+                            <span className="inline-flex items-center gap-1">
+                              <AlertTriangle className="h-3 w-3" />
+                              Stress:&nbsp;<b>{t.ai_stress_cost ?? 3}</b>/5
+                            </span>
+                            <span className="inline-flex items-center gap-1">
+                              <Zap className="h-3 w-3" />
+                              Energy:&nbsp;<b>{t.ai_energy_requirement || "medium"}</b>
+                            </span>
+                            <span className="inline-flex items-center gap-1">
+                              <Clock className="h-3 w-3" />
+                              {displayMinutes > 0 ? `${displayMinutes} min` : "No estimate yet"}
+                            </span>
+                            {t.ai_category && (
+                              <span className="inline-flex items-center gap-1 capitalize">
+                                <Brain className="h-3 w-3" />
+                                {t.ai_category.replace("_", " ")}
+                              </span>
+                            )}
+                            {hasPlannedDate && (
+                              <span className="inline-flex items-center gap-1">
+                                <Calendar className="h-3 w-3" />
+                                {isTodayPlanned
+                                  ? "Planned for today"
+                                  : `Planned for ${formatDateOnly(t.planned_for_date)}`}
+                              </span>
+                            )}
+                          </div>
+                          {t.ai_reason && (
+                            <p className="text-xs text-muted-foreground mt-1">
+                              <span className="font-semibold">AI: </span>
+                              {t.ai_reason}
+                            </p>
                           )}
-                          <span className="inline-flex items-center gap-1">
-                            <Target className="h-3 w-3" />
-                            Importance:&nbsp;<b>{t.ai_importance ?? 3}</b>/5
-                          </span>
-                          <span className="inline-flex items-center gap-1">
-                            <AlertTriangle className="h-3 w-3" />
-                            Stress:&nbsp;<b>{t.ai_stress_cost ?? 3}</b>/5
-                          </span>
-                          <span className="inline-flex items-center gap-1">
-                            <Zap className="h-3 w-3" />
-                            Energy:&nbsp;<b>{t.ai_energy_requirement || "medium"}</b>
-                          </span>
-                          <span className="inline-flex items-center gap-1">
-                            <Clock className="h-3 w-3" />
-                            {t.ai_estimated_minutes ?? 30} min
-                          </span>
-                          {t.ai_category && (
-                            <span className="inline-flex items-center gap-1 capitalize">
-                              <Brain className="h-3 w-3" />
-                              {t.ai_category.replace("_", " ")}
-                            </span>
+
+                          {/* AI-generated step-by-step guide */}
+                          {expandedTaskId === t.id && t.steps_json && t.steps_json.length > 0 && (
+                            <div className="mt-2 rounded-md border bg-muted/40 px-2.5 py-2">
+                              <div className="mb-1 flex items-center justify-between">
+                                <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                  AI step-by-step guide
+                                </span>
+                                <span className="text-[10px] text-muted-foreground">
+                                  {t.steps_json.length} step
+                                  {t.steps_json.length > 1 ? "s" : ""}
+                                </span>
+                              </div>
+                              <ol className="space-y-1.5 text-[11px]">
+                                {t.steps_json.map((s, idxStep) => {
+                                  const isBreak =
+                                    typeof s.instruction === "string" &&
+                                    s.instruction.trim().toLowerCase().startsWith("break:")
+                                  return (
+                                    <li
+                                      key={idxStep}
+                                      className={`flex gap-2 ${
+                                        isBreak
+                                          ? "rounded-md border border-amber-200 bg-amber-50/70 px-2 py-1"
+                                          : ""
+                                      }`}
+                                    >
+                                      <span className="mt-[1px] h-4 w-4 flex-shrink-0 rounded-full border bg-background text-[9px] flex items-center justify-center">
+                                        {s.step_number ?? idxStep + 1}
+                                      </span>
+                                      <div className="flex-1 min-w-0">
+                                        <div className="flex flex-wrap items-center gap-1">
+                                          <span
+                                            className={`font-medium ${
+                                              isBreak ? "text-amber-800" : ""
+                                            }`}
+                                          >
+                                            {s.instruction}
+                                          </span>
+                                          {s.estimated_minutes && (
+                                            <span className="text-[10px] text-muted-foreground">
+                                              (~{s.estimated_minutes} min)
+                                            </span>
+                                          )}
+                                          {isBreak && (
+                                            <span className="text-[9px] rounded-full bg-amber-100 px-2 py-[1px] text-amber-800 font-semibold">
+                                              Break
+                                            </span>
+                                          )}
+                                        </div>
+                                        {s.notes && (
+                                          <p className="text-[10px] text-muted-foreground">
+                                            {s.notes}
+                                          </p>
+                                        )}
+                                        {Array.isArray(s.links) && s.links.length > 0 && (
+                                          <div className="mt-1 flex flex-wrap gap-2">
+                                            {s.links.map((link, linkIdx) => (
+                                              <a
+                                                key={linkIdx}
+                                                href={link}
+                                                target="_blank"
+                                                rel="noreferrer"
+                                                className="text-[10px] underline text-blue-600 hover:text-blue-700"
+                                              >
+                                                Helpful link {linkIdx + 1}
+                                              </a>
+                                            ))}
+                                          </div>
+                                        )}
+                                      </div>
+                                    </li>
+                                  )
+                                })}
+                              </ol>
+                            </div>
                           )}
                         </div>
-                        {t.ai_reason && (
-                          <p className="text-xs text-muted-foreground mt-1">
-                            <span className="font-semibold">AI: </span>
-                            {t.ai_reason}
-                          </p>
-                        )}
 
-                        {/* AI-generated step-by-step guide */}
-                        {expandedTaskId === t.id && t.steps_json && t.steps_json.length > 0 && (
-                          <div className="mt-2 rounded-md border bg-muted/40 px-2.5 py-2">
-                            <div className="mb-1 flex items-center justify-between">
-                              <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                                AI step-by-step guide
-                              </span>
-                              <span className="text-[10px] text-muted-foreground">
-                                {t.steps_json.length} step{t.steps_json.length > 1 ? "s" : ""}
-                              </span>
+                        {/* Controls on the right */}
+                        <div className="flex flex-col items-end gap-2 text-xs text-muted-foreground">
+                          {bucketKey === "now" && list.length > 1 && (
+                            <div className="flex md:flex-col items-center gap-2 md:gap-1">
+                              <span className="md:mb-1">Adjust order</span>
+                              <Button
+                                variant="outline"
+                                size="icon"
+                                className="h-6 w-6"
+                                onClick={() => moveTask(bucketKey, idx, -1)}
+                                disabled={idx === 0}
+                                type="button"
+                              >
+                                <ArrowUp className="h-3 w-3" />
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="icon"
+                                className="h-6 w-6"
+                                onClick={() => moveTask(bucketKey, idx, +1)}
+                                disabled={idx === list.length - 1}
+                                type="button"
+                              >
+                                <ArrowDown className="h-3 w-3" />
+                              </Button>
                             </div>
-                            <ol className="space-y-1.5 text-[11px]">
-                              {t.steps_json.map((s, idxStep) => (
-                                <li key={idxStep} className="flex gap-2">
-                                  <span className="mt-[1px] h-4 w-4 flex-shrink-0 rounded-full border bg-background text-[9px] flex items-center justify-center">
-                                    {s.step_number ?? idxStep + 1}
-                                  </span>
-                                  <div className="flex-1 min-w-0">
-                                    <div className="flex flex-wrap items-center gap-1">
-                                      <span className="font-medium">{s.instruction}</span>
-                                      {s.estimated_minutes && (
-                                        <span className="text-[10px] text-muted-foreground">
-                                          (~{s.estimated_minutes} min)
-                                        </span>
-                                      )}
-                                    </div>
-                                    {s.notes && (
-                                      <p className="text-[10px] text-muted-foreground">
-                                        {s.notes}
-                                      </p>
-                                    )}
-                                  </div>
-                                </li>
-                              ))}
-                            </ol>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Manual ordering + Task Coach controls */}
-                      <div className="flex flex-col items-end gap-2 text-xs text-muted-foreground">
-                        {bucketKey === "now" && list.length > 1 && (
-                          <div className="flex md:flex-col items-center gap-2 md:gap-1">
-                            <span className="md:mb-1">Adjust order</span>
-                            <Button
-                              variant="outline"
-                              size="icon"
-                              className="h-6 w-6"
-                              onClick={() => moveTask(bucketKey, idx, -1)}
-                              disabled={idx === 0}
-                              type="button"
-                            >
-                              <ArrowUp className="h-3 w-3" />
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="icon"
-                              className="h-6 w-6"
-                              onClick={() => moveTask(bucketKey, idx, +1)}
-                              disabled={idx === list.length - 1}
-                              type="button"
-                            >
-                              <ArrowDown className="h-3 w-3" />
-                            </Button>
-                          </div>
-                        )}
-                        <Button
-                          variant="outline"
-                          size="xs"
-                          className="h-6 px-2 text-[10px]"
-                          onClick={() => handleGuideMeClick(t)}
-                          disabled={stepsLoadingId === t.id}
-                          type="button"
-                        >
-                          {stepsLoadingId === t.id ? (
-                            <>
-                              <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                              Thinking...
-                            </>
-                          ) : (
-                            <>
-                              <ListChecks className="mr-1 h-3 w-3" />
-                              Guide me
-                            </>
                           )}
-                        </Button>
+                          <Button
+                            variant="outline"
+                            size="xs"
+                            className="h-6 px-2 text-[10px]"
+                            onClick={() => handleGuideMeClick(t)}
+                            disabled={stepsLoadingId === t.id}
+                            type="button"
+                          >
+                            {stepsLoadingId === t.id ? (
+                              <>
+                                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                                Thinking...
+                              </>
+                            ) : (
+                              <>
+                                <ListChecks className="mr-1 h-3 w-3" />
+                                Guide me
+                              </>
+                            )}
+                          </Button>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </CardContent>
               </Card>
             )
@@ -768,26 +1083,37 @@ export default function TaskPrioritizer() {
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground space-y-2">
               <p>
-                This feature is <b>independent</b> of the Focus Companion email scheduler. It has
-                its own <code>priority_tasks</code> and <code>priority_runs</code> tables in Supabase.
+                This agent is designed as a <b>stress-aware planner</b> inside MindEase. It
+                takes your tasks, deadlines, your available focus time, and (optionally) how
+                you&apos;re feeling today, and then builds a realistic plan instead of dumping
+                everything into one day.
               </p>
               <ul className="list-disc ml-5 space-y-1">
                 <li>
-                  When you create a task, Gemini estimates <b>importance</b>, <b>stress</b>,{" "}
-                  <b>energy requirement</b>, and <b>duration</b>.
+                  When you create a task, Gemini estimates <b>importance</b>, <b>stress cost</b>,{" "}
+                  <b>energy requirement</b>, and <b>duration</b> to understand how heavy the work
+                  feels.
                 </li>
                 <li>
-                  When you click <b>“Let AI prioritize my day”</b>, the model receives all tasks plus
-                  your energy profile and time budget, and returns an ordered plan with buckets:
-                  <b> Now</b>, <b>Next</b>, <b>Later</b>, and <b>Backlog</b>.
+                  When you click <b>&quot;Let AI prioritize my plan&quot;</b>, the model sees all
+                  tasks plus your time budget and chosen <b>planning horizon</b>. It fills the{" "}
+                  <b>Now</b>, <b>Next</b>, <b>Later</b>, and <b>Backlog</b> buckets and can assign{" "}
+                  <b>planned days</b> and <b>minutes</b> for each task.
                 </li>
                 <li>
-                  You can still <b>override</b> the order for the “Now” bucket; the backend updates
-                  ranks accordingly.
+                  If your focus time is less than the total time of urgent tasks, the agent
+                  prefers to keep the most critical items today and gently push the rest to other
+                  days within your horizon.
                 </li>
                 <li>
-                  For any task, clicking <b>“Guide me”</b> asks the AI to generate a small,
-                  actionable, step-by-step breakdown of how to execute that task.
+                  You can still override the order inside the &quot;Now&quot; bucket; those
+                  manual adjustments are saved back to the backend.
+                </li>
+                <li>
+                  For any task, clicking <b>&quot;Guide me&quot;</b> asks the AI to generate a
+                  concrete step-by-step breakdown. Using your relaxation preferences, it can
+                  insert short, personalized <b>break steps</b> (with optional helpful links),
+                  so the plan supports both productivity and stress relief.
                 </li>
               </ul>
             </CardContent>

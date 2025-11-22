@@ -27,6 +27,7 @@ from services.priority_task_service import (
     get_today_tasks_for_user,
     update_manual_order_for_user,
     generate_steps_for_task,
+    get_relax_prefs_for_user
 )
 
 
@@ -306,43 +307,59 @@ def priority_generate_task_steps():
     return jsonify(out), 200
 
 
+# ---------------------------
+#   Run AI prioritization
+# ---------------------------
 @app.post("/api/priority/run")
 @jwt_required(optional=True)
 def priority_run():
-    """
-    Run AI prioritization for all relevant tasks of a user.
-
-    Body JSON:
-    {
-      "user_email": "user@example.com",
-      "today_available_minutes": 120   # optional
-    }
-
-    Response:
-    {
-      "run_id": "...",
-      "plan_summary": "...",
-      "tasks": [ ... ]
-    }
-    """
     data = request.get_json(force=True) or {}
+
     user_email = (data.get("user_email") or "").strip()
     if not user_email:
         return jsonify({"error": "user_email is required"}), 400
 
+    # Today focus time
     today_minutes = data.get("today_available_minutes")
     if today_minutes is not None:
         try:
             today_minutes = int(today_minutes)
-        except ValueError:
+        except:
             today_minutes = None
 
+    # Planning horizon as a free numeric field
+    planning_horizon_days = data.get("planning_horizon_days")
+    if planning_horizon_days is not None:
+        try:
+            planning_horizon_days = int(planning_horizon_days)
+        except:
+            planning_horizon_days = None
+
+    # Only send feedback if we already have an existing plan
+    feedback_type = data.get("feedback_type") or None
+    if isinstance(feedback_type, str) and feedback_type.strip() == "":
+        feedback_type = None
+
+    # Multi-day flag (optional)
+    multi_day = data.get("multi_day")
+    if isinstance(multi_day, str):
+        multi_day = multi_day.strip().lower() in ("true", "1", "yes")
+    elif not isinstance(multi_day, bool):
+        multi_day = None
+
     try:
-        out = prioritize_for_user(user_email, today_minutes_override=today_minutes)
+        out = prioritize_for_user(
+            user_email,
+            today_minutes_override=today_minutes,
+            planning_horizon_days=planning_horizon_days,
+            multi_day=multi_day,
+            feedback_type=feedback_type,
+        )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
     return jsonify(out), 200
+
 
 
 @app.get("/api/priority/tasks/today")
@@ -399,6 +416,48 @@ def priority_manual_order():
 
     return jsonify(out), 200
 
+# ---------------------------
+#   Get relaxation preferences
+# ---------------------------
+@app.get("/api/priority/relax-prefs")
+@jwt_required(optional=True)
+def get_relax_prefs():
+    user_email = request.args.get("user_email", "").strip()
+    if not user_email:
+        return jsonify({"error": "user_email is required"}), 400
+
+    user = get_or_create_user_by_email(user_email)
+    prefs = get_relax_prefs_for_user(user["id"])
+
+    return jsonify({"prefs": prefs}), 200
+
+# ---------------------------
+#   NEW ENDPOINT
+#   Save relaxation preferences
+# ---------------------------
+@app.post("/api/priority/relax-prefs")
+@jwt_required(optional=True)
+def save_relax_prefs():
+    data = request.get_json(force=True) or {}
+    user_email = (data.get("user_email") or "").strip()
+
+    if not user_email:
+        return jsonify({"error": "user_email is required"}), 400
+
+    user = get_or_create_user_by_email(user_email)
+
+    payload = {
+        "user_id": user["id"],
+        "likes_games": data.get("likes_games", False),
+        "likes_music": data.get("likes_music", False),
+        "likes_breathing": data.get("likes_breathing", False),
+        "likes_walking": data.get("likes_walking", False),
+        "likes_chatting": data.get("likes_chatting", False),
+        "custom_text": data.get("custom_text") or "",
+    }
+
+    supabase.table("priority_relax_prefs").upsert(payload).execute()
+    return jsonify({"success": True}), 200
 
 
 # -------- Auth --------
