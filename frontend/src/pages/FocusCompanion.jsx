@@ -74,12 +74,22 @@ export default function FocusCompanion() {
   const [timebox, setTimebox] = useState(45) // minutes
   const [deadline, setDeadline] = useState("") // HTML datetime-local string
 
-  // --- preferences state
+  // --- workday preferences state
   const [workStart, setWorkStart] = useState("06:00")
   const [workEnd, setWorkEnd] = useState("23:00")
   const [bufferMin, setBufferMin] = useState(1)
   const [notifyEmail, setNotifyEmail] = useState(true)
+
+  // --- relaxation preferences state (for personalized breaks)
+  const [likesGames, setLikesGames] = useState(false)
+  const [likesMusic, setLikesMusic] = useState(false)
+  const [likesBreathing, setLikesBreathing] = useState(false)
+  const [likesWalking, setLikesWalking] = useState(false)
+  const [likesChatting, setLikesChatting] = useState(false)
+  const [relaxNotes, setRelaxNotes] = useState("")
+
   const [prefsLoading, setPrefsLoading] = useState(false)
+  const [relaxPrefsLoading, setRelaxPrefsLoading] = useState(false)
 
   // --- results / UI
   const [loading, setLoading] = useState(false)
@@ -133,10 +143,10 @@ export default function FocusCompanion() {
       setWorkEnd(prefs.work_end_hhmm || "23:59")
       setBufferMin(prefs.default_buffer_min ?? 1)
       setNotifyEmail(prefs.notify_email ?? true)
-      setInfoMessage("Preferences loaded.")
+      setInfoMessage("Workday preferences loaded.")
     } catch (err) {
       console.error(err)
-      setError(err.response?.data?.error || "Failed to load preferences.")
+      setError(err.response?.data?.error || "Failed to load workday preferences.")
     } finally {
       setPrefsLoading(false)
     }
@@ -158,12 +168,68 @@ export default function FocusCompanion() {
         default_buffer_min: bufferMin,
         notify_email: notifyEmail,
       })
-      setInfoMessage("Preferences saved for this email.")
+      setInfoMessage("Workday preferences saved for this email.")
     } catch (err) {
       console.error(err)
-      setError(err.response?.data?.error || "Failed to save preferences.")
+      setError(err.response?.data?.error || "Failed to save workday preferences.")
     } finally {
       setPrefsLoading(false)
+    }
+  }
+
+  // --- relaxation preferences API ---
+  const handleLoadRelaxPrefs = async () => {
+    if (!userEmail) {
+      setError("Please enter your email above to load relaxation preferences.")
+      return
+    }
+    setError("")
+    setInfoMessage("")
+    setRelaxPrefsLoading(true)
+    try {
+      const res = await axios.get(`${API_BASE}/api/priority/relax-prefs`, {
+        params: { user_email: userEmail },
+      })
+      const prefs = res.data.prefs || {}
+      setLikesGames(!!prefs.likes_games)
+      setLikesMusic(!!prefs.likes_music)
+      setLikesBreathing(!!prefs.likes_breathing)
+      setLikesWalking(!!prefs.likes_walking)
+      setLikesChatting(!!prefs.likes_chatting)
+      setRelaxNotes(prefs.custom_text || "")
+      setInfoMessage("Relaxation preferences loaded.")
+    } catch (err) {
+      console.error(err)
+      setError(err.response?.data?.error || "Failed to load relaxation preferences.")
+    } finally {
+      setRelaxPrefsLoading(false)
+    }
+  }
+
+  const handleSaveRelaxPrefs = async () => {
+    if (!userEmail) {
+      setError("Please enter your email above to save relaxation preferences.")
+      return
+    }
+    setError("")
+    setInfoMessage("")
+    setRelaxPrefsLoading(true)
+    try {
+      await axios.post(`${API_BASE}/api/priority/relax-prefs`, {
+        user_email: userEmail,
+        likes_games: likesGames,
+        likes_music: likesMusic,
+        likes_breathing: likesBreathing,
+        likes_walking: likesWalking,
+        likes_chatting: likesChatting,
+        custom_text: relaxNotes || null,
+      })
+      setInfoMessage("Relaxation preferences saved for this email.")
+    } catch (err) {
+      console.error(err)
+      setError(err.response?.data?.error || "Failed to save relaxation preferences.")
+    } finally {
+      setRelaxPrefsLoading(false)
     }
   }
 
@@ -217,6 +283,12 @@ export default function FocusCompanion() {
     }
   }
 
+  // --- render helpers for break vs work steps ---
+  const isBreakStep = (subtask) => {
+    if (!subtask?.title) return false
+    return subtask.title.trim().toLowerCase().startsWith("break:")
+  }
+
   return (
     <div className="min-h-screen flex flex-col bg-background text-foreground">
       <Navbar />
@@ -229,8 +301,9 @@ export default function FocusCompanion() {
         <motion.header variants={itemVariants} className="mb-8">
           <h1 className="text-3xl font-bold">Focus Companion - Planner · Scheduler · Notifier</h1>
           <p className="text-muted-foreground mt-2">
-            Turn a big goal into 3–5 atomic sub-tasks, schedule them within your work hours,
-            and receive gentle email nudges when it&apos;s time to start.
+            Turn a big goal into small, scheduled focus blocks, and receive gentle email nudges when
+            it&apos;s time to start. Break suggestions are personalized based on your relaxation
+            preferences.
           </p>
 
           {(error || infoMessage) && (
@@ -249,99 +322,223 @@ export default function FocusCompanion() {
           )}
         </motion.header>
 
-        {/* Preferences */}
+        {/* Preferences: Workday + Relaxation */}
         <motion.section variants={itemVariants} className="mb-8">
           <Card>
             <CardHeader className="flex flex-col md:flex-row md:items-center md:justify-between">
               <CardTitle className="flex items-center gap-2">
                 <Settings className="w-5 h-5" />
-                Workday Preferences
+                Preferences
               </CardTitle>
               <div className="text-xs text-muted-foreground mt-2 md:mt-0">
-                These settings are stored per email and used for all future focus plans.
+                Stored per email. Used for both scheduling and break suggestions.
               </div>
             </CardHeader>
-            <CardContent>
-              <div className="grid gap-4 md:grid-cols-4">
-                <div>
-                  <label className="text-sm font-medium">Workday start (HH:MM)</label>
-                  <Input
-                    type="text"
-                    placeholder="09:00"
-                    value={workStart}
-                    onChange={(e) => setWorkStart(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="text-sm font-medium">Workday end (HH:MM)</label>
-                  <Input
-                    type="text"
-                    placeholder="18:00"
-                    value={workEnd}
-                    onChange={(e) => setWorkEnd(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="text-sm font-medium">Buffer between blocks (min)</label>
-                  <Input
-                    type="number"
-                    min={0}
-                    value={bufferMin}
-                    onChange={(e) => setBufferMin(Number(e.target.value) || 0)}
-                  />
-                </div>
-                <div className="flex flex-col justify-end">
-                  <label className="text-sm font-medium mb-1">Email reminders</label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      id="notify-email"
-                      type="checkbox"
-                      className="h-4 w-4"
-                      checked={notifyEmail}
-                      onChange={(e) => setNotifyEmail(e.target.checked)}
+            <CardContent className="space-y-6">
+              {/* Workday preferences */}
+              <div>
+                <h3 className="text-sm font-semibold mb-2">Workday & scheduling</h3>
+                <div className="grid gap-4 md:grid-cols-4">
+                  <div>
+                    <label className="text-sm font-medium">Workday start (HH:MM)</label>
+                    <Input
+                      type="text"
+                      placeholder="09:00"
+                      value={workStart}
+                      onChange={(e) => setWorkStart(e.target.value)}
                     />
-                    <label htmlFor="notify-email" className="text-sm text-muted-foreground">
-                      Send reminder emails
-                    </label>
                   </div>
+                  <div>
+                    <label className="text-sm font-medium">Workday end (HH:MM)</label>
+                    <Input
+                      type="text"
+                      placeholder="18:00"
+                      value={workEnd}
+                      onChange={(e) => setWorkEnd(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium">Buffer between blocks (min)</label>
+                    <Input
+                      type="number"
+                      min={0}
+                      value={bufferMin}
+                      onChange={(e) => setBufferMin(Number(e.target.value) || 0)}
+                    />
+                  </div>
+                  <div className="flex flex-col justify-end">
+                    <label className="text-sm font-medium mb-1">Email reminders</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        id="notify-email"
+                        type="checkbox"
+                        className="h-4 w-4"
+                        checked={notifyEmail}
+                        onChange={(e) => setNotifyEmail(e.target.checked)}
+                      />
+                      <label htmlFor="notify-email" className="text-sm text-muted-foreground">
+                        Send reminder emails
+                      </label>
+                    </div>
+                  </div>
+                </div>
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between mt-4 gap-3">
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={handleLoadPrefs}
+                      disabled={prefsLoading || !userEmail}
+                    >
+                      {prefsLoading ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                          Loading…
+                        </>
+                      ) : (
+                        <>
+                          <RefreshCcw className="w-4 h-4 mr-1" />
+                          Load workday prefs
+                        </>
+                      )}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={handleSavePrefs}
+                      disabled={prefsLoading || !userEmail}
+                    >
+                      <Settings className="w-4 h-4 mr-1" />
+                      Save workday prefs
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Uses the same email you enter below.{" "}
+                    {!userEmail && <span>Enter your email before loading/saving.</span>}
+                  </p>
                 </div>
               </div>
 
-              <div className="flex flex-col md:flex-row md:items-center md:justify-between mt-4 gap-3">
-                <div className="flex gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={handleLoadPrefs}
-                    disabled={prefsLoading || !userEmail}
-                  >
-                    {prefsLoading ? (
-                      <>
-                        <Loader2 className="w-4 h-4 mr-1 animate-spin" />
-                        Loading…
-                      </>
-                    ) : (
-                      <>
-                        <RefreshCcw className="w-4 h-4 mr-1" />
-                        Load prefs
-                      </>
-                    )}
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    onClick={handleSavePrefs}
-                    disabled={prefsLoading || !userEmail}
-                  >
-                    <Settings className="w-4 h-4 mr-1" />
-                    Save prefs
-                  </Button>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Uses the same email you enter below.{" "}
-                  {!userEmail && <span>Enter your email before loading/saving.</span>}
+              {/* Relaxation preferences */}
+              <div className="border-t pt-4">
+                <h3 className="text-sm font-semibold mb-2">Relaxation & break preferences</h3>
+                <p className="text-xs text-muted-foreground mb-3">
+                  These preferences are shared with the task prioritizer and planner so breaks can
+                  suggest activities that actually help you de-stress.
                 </p>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      <input
+                        id="relax-games"
+                        type="checkbox"
+                        className="h-4 w-4"
+                        checked={likesGames}
+                        onChange={(e) => setLikesGames(e.target.checked)}
+                      />
+                      <label htmlFor="relax-games" className="text-sm">
+                        Play light games during breaks
+                      </label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        id="relax-music"
+                        type="checkbox"
+                        className="h-4 w-4"
+                        checked={likesMusic}
+                        onChange={(e) => setLikesMusic(e.target.checked)}
+                      />
+                      <label htmlFor="relax-music" className="text-sm">
+                        Listen to music / playlists
+                      </label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        id="relax-breathing"
+                        type="checkbox"
+                        className="h-4 w-4"
+                        checked={likesBreathing}
+                        onChange={(e) => setLikesBreathing(e.target.checked)}
+                      />
+                      <label htmlFor="relax-breathing" className="text-sm">
+                        Breathing / relaxation exercises
+                      </label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        id="relax-walking"
+                        type="checkbox"
+                        className="h-4 w-4"
+                        checked={likesWalking}
+                        onChange={(e) => setLikesWalking(e.target.checked)}
+                      />
+                      <label htmlFor="relax-walking" className="text-sm">
+                        Short walk / stretching
+                      </label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        id="relax-chatting"
+                        type="checkbox"
+                        className="h-4 w-4"
+                        checked={likesChatting}
+                        onChange={(e) => setLikesChatting(e.target.checked)}
+                      />
+                      <label htmlFor="relax-chatting" className="text-sm">
+                        Quick chat / call with someone
+                      </label>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium">
+                      Anything else that helps you relax? (optional)
+                    </label>
+                    <Textarea
+                      className="mt-1"
+                      placeholder="e.g., specific playlists, favourite games, links, or routines you like during a break."
+                      rows={4}
+                      value={relaxNotes}
+                      onChange={(e) => setRelaxNotes(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between mt-4 gap-3">
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={handleLoadRelaxPrefs}
+                      disabled={relaxPrefsLoading || !userEmail}
+                    >
+                      {relaxPrefsLoading ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                          Loading…
+                        </>
+                      ) : (
+                        <>
+                          <RefreshCcw className="w-4 h-4 mr-1" />
+                          Load relax prefs
+                        </>
+                      )}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={handleSaveRelaxPrefs}
+                      disabled={relaxPrefsLoading || !userEmail}
+                    >
+                      <Settings className="w-4 h-4 mr-1" />
+                      Save relax prefs
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    These preferences are used when the planner inserts short breaks between
+                    sub-tasks.
+                  </p>
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -453,41 +650,54 @@ export default function FocusCompanion() {
             <CardContent className="space-y-3">
               {subtasks.length === 0 && (
                 <p className="text-sm text-muted-foreground">
-                  Create a task above to see its 3–5 atomic sub-steps here.
+                  Create a task above to see its sub-steps here.
                 </p>
               )}
 
-              {subtasks.map((s) => (
-                <div
-                  key={s.id}
-                  className="flex flex-col md:flex-row md:items-start md:justify-between rounded-lg border p-4"
-                >
-                  <div className="space-y-1 md:max-w-xl">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <Badge variant="secondary">Step {s.idx}</Badge>
-                      <span className="font-medium">{s.title}</span>
+              {subtasks.map((s) => {
+                const durationMin = minutesBetween(s.planned_start_ts, s.planned_end_ts)
+                const breakStep = isBreakStep(s)
+
+                return (
+                  <div
+                    key={s.id}
+                    className={`flex flex-col md:flex-row md:items-start md:justify-between rounded-lg border p-4 ${
+                      breakStep ? "border-amber-200 bg-amber-50/70" : ""
+                    }`}
+                  >
+                    <div className="space-y-1 md:max-w-xl">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Badge variant={breakStep ? "outline" : "secondary"}>
+                          {breakStep ? "Break" : `Step ${s.idx}`}
+                        </Badge>
+                        <span className={`font-medium ${breakStep ? "text-amber-900" : ""}`}>
+                          {s.title}
+                        </span>
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        <span className="inline-flex items-center gap-1 mr-3">
+                          <AlarmClock className="w-3.5 h-3.5" />
+                          {toLocal(s.planned_start_ts)} → {toLocal(s.planned_end_ts)}
+                        </span>
+                        <span className="inline-flex items-center gap-1">
+                          <Clock className="w-3.5 h-3.5" />
+                          {durationMin} min
+                        </span>
+                      </div>
+                      {s.dod_text && (
+                        <details className="mt-1 text-xs text-muted-foreground">
+                          <summary className="cursor-pointer select-none">
+                            {breakStep
+                              ? "Break details (click to expand)"
+                              : "Definition of done (click to expand)"}
+                          </summary>
+                          <p className="mt-1 whitespace-pre-line">{s.dod_text}</p>
+                        </details>
+                      )}
                     </div>
-                    <div className="text-xs text-muted-foreground">
-                      <span className="inline-flex items-center gap-1 mr-3">
-                        <AlarmClock className="w-3.5 h-3.5" />
-                        {toLocal(s.planned_start_ts)} → {toLocal(s.planned_end_ts)}
-                      </span>
-                      <span className="inline-flex items-center gap-1">
-                        <Clock className="w-3.5 h-3.5" />
-                        {minutesBetween(s.planned_start_ts, s.planned_end_ts)} min
-                      </span>
-                    </div>
-                    {s.dod_text && (
-                      <details className="mt-1 text-xs text-muted-foreground">
-                        <summary className="cursor-pointer select-none">
-                          Definition of done (click to expand)
-                        </summary>
-                        <p className="mt-1 whitespace-pre-line">{s.dod_text}</p>
-                      </details>
-                    )}
                   </div>
-                </div>
-              ))}
+                )
+              })}
             </CardContent>
           </Card>
         </motion.section>
@@ -519,36 +729,56 @@ export default function FocusCompanion() {
                     <div key={day} className="space-y-2">
                       <div className="text-xs font-semibold text-muted-foreground">{day}</div>
                       <div className="space-y-2">
-                        {items.map((s) => (
-                          <div
-                            key={s.id}
-                            className="flex flex-col md:flex-row md:items-start md:justify-between rounded-lg border p-3 text-xs"
-                          >
-                            <div className="space-y-0.5 md:max-w-xl">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <Badge variant="outline" className="text-[11px]">
-                                  Step {s.idx}
-                                </Badge>
-                                <span className="font-medium text-sm">{s.title}</span>
+                        {items.map((s) => {
+                          const durationMin = minutesBetween(
+                            s.planned_start_ts,
+                            s.planned_end_ts,
+                          )
+                          const breakStep = isBreakStep(s)
+
+                          return (
+                            <div
+                              key={s.id}
+                              className={`flex flex-col md:flex-row md:items-start md:justify-between rounded-lg border p-3 text-xs ${
+                                breakStep ? "border-amber-200 bg-amber-50/70" : ""
+                              }`}
+                            >
+                              <div className="space-y-0.5 md:max-w-xl">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <Badge
+                                    variant={breakStep ? "outline" : "outline"}
+                                    className="text-[11px]"
+                                  >
+                                    {breakStep ? "Break" : `Step ${s.idx}`}
+                                  </Badge>
+                                  <span
+                                    className={`font-medium text-sm ${
+                                      breakStep ? "text-amber-900" : ""
+                                    }`}
+                                  >
+                                    {s.title}
+                                  </span>
+                                </div>
+                                <div className="text-[11px] text-muted-foreground">
+                                  <span className="inline-flex items-center gap-1 mr-2">
+                                    <AlarmClock className="w-3 h-3" />
+                                    {toLocal(s.planned_start_ts)} → {toLocal(s.planned_end_ts)}
+                                  </span>
+                                  <span className="inline-flex items-center gap-1">
+                                    <Clock className="w-3 h-3" />
+                                    {durationMin} min
+                                  </span>
+                                </div>
+                                {s.dod_text && (
+                                  <p className="mt-1 text-[11px] text-muted-foreground line-clamp-2">
+                                    {breakStep ? "Break plan: " : "Done when: "}
+                                    {s.dod_text}
+                                  </p>
+                                )}
                               </div>
-                              <div className="text-[11px] text-muted-foreground">
-                                <span className="inline-flex items-center gap-1 mr-2">
-                                  <AlarmClock className="w-3 h-3" />
-                                  {toLocal(s.planned_start_ts)} → {toLocal(s.planned_end_ts)}
-                                </span>
-                                <span className="inline-flex items-center gap-1">
-                                  <Clock className="w-3 h-3" />
-                                  {minutesBetween(s.planned_start_ts, s.planned_end_ts)} min
-                                </span>
-                              </div>
-                              {s.dod_text && (
-                                <p className="mt-1 text-[11px] text-muted-foreground line-clamp-2">
-                                  Done when: {s.dod_text}
-                                </p>
-                              )}
                             </div>
-                          </div>
-                        ))}
+                          )
+                        })}
                       </div>
                     </div>
                   ))}
@@ -566,16 +796,22 @@ export default function FocusCompanion() {
             </CardHeader>
             <CardContent className="space-y-2 text-sm text-muted-foreground">
               <p>
-                Focus Companion turns a vague, slightly scary task into a small series of concrete,
-                time-bound steps. Under the hood, the backend uses <b>Gemini 2.5 Flash</b> to produce
-                atomic sub-tasks with a clear <i>definition of done</i>, then schedules them within
-                your configured work hours.
+                Focus Companion turns a vague, slightly scary task into a series of concrete,
+                time-bound steps. Under the hood, the backend uses{" "}
+                <b>Gemini 2.5 Flash</b> to produce atomic sub-tasks with a clear{" "}
+                <i>definition of done</i>, then schedules them within your configured work hours.
               </p>
               <p>
-                At each planned start time, you receive a short email reminder generated by the
-                backend. The &quot;Upcoming Focus Blocks&quot; timeline helps you see your entire week
-                at a glance, while the preferences panel lets you adjust work hours, buffer, and email
-                reminders without touching any code.
+                When your relaxation preferences are set, the planner can insert short, personalized
+                break steps (for example, breathing, music, or a light game) between intense work
+                blocks. These show up here just like normal steps, and you&apos;ll receive reminder
+                emails for them too—helping you de-stress regularly instead of only after you&apos;re
+                exhausted.
+              </p>
+              <p>
+                The &quot;Upcoming Focus Blocks&quot; timeline helps you see your entire week at a
+                glance, while the preferences panel lets you adjust work hours, buffers, email
+                reminders, and break style without touching any code.
               </p>
             </CardContent>
           </Card>
