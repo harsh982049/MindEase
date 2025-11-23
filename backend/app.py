@@ -456,7 +456,8 @@ def save_relax_prefs():
         "custom_text": data.get("custom_text") or "",
     }
 
-    supabase.table("priority_relax_prefs").upsert(payload).execute()
+    # FIX: added on_conflict="user_id" to handle existing rows correctly
+    supabase.table("priority_relax_prefs").upsert(payload, on_conflict="user_id").execute()
     return jsonify({"success": True}), 200
 
 
@@ -620,6 +621,7 @@ def focus_create_task():
         return jsonify({"error": f"user_prefs upsert/select failed: {e.message}"}), 500
 
     # 3) Insert task
+    # 3) Insert task
     try:
         task_res = supabase.table("tasks").insert({
             "user_id": user["id"],
@@ -636,7 +638,23 @@ def focus_create_task():
         return jsonify({"error": f"tasks insert failed: {e.message}"}), 500
 
     # 4) Plan with Gemini
+    # FIX: Fetch relaxation prefs and inject into constraints so AI knows about them
     try:
+        # Re-use the existing helper sb_select_one defined in app.py
+        relax_prefs = sb_select_one("priority_relax_prefs", user_id=user["id"])
+        
+        # If user has prefs, add them to constraints. 
+        # The key "relax_prefs" matches what focus_planner_service.py expects.
+        if relax_prefs:
+            constraints["relax_prefs"] = {
+                "likes_games": relax_prefs.get("likes_games"),
+                "likes_music": relax_prefs.get("likes_music"),
+                "likes_breathing": relax_prefs.get("likes_breathing"),
+                "likes_walking": relax_prefs.get("likes_walking"),
+                "likes_chatting": relax_prefs.get("likes_chatting"),
+                "custom_text": relax_prefs.get("custom_text"),
+            }
+            
         plan = plan_subtasks(title, timebox_min, constraints)
     except Exception as e:
         return jsonify({"error": f"planner failed: {str(e)}"}), 500
